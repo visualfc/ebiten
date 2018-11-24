@@ -3,6 +3,16 @@ language: go
 go:
   - "1.11"
 
+matrix:
+  include:
+    - os: linux
+    - os: osx
+      osx_image: xcode10.1
+
+compiler:
+  - gcc
+  - clang
+
 addons:
   apt:
     sources:
@@ -24,29 +34,29 @@ install:
   - go mod init example.com/m
   - go get github.com/hajimehoshi/ebiten@$TRAVIS_BRANCH
   - go get github.com/gopherjs/gopherjs
-  - go get myitcv.io/cmd/gjbt
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then go get myitcv.io/cmd/gjbt; fi
   - # gopath-get for the current GopherJS and gjbt.
   - GO111MODULE=off go get -tags example github.com/hajimehoshi/ebiten/... 
   - GO111MODULE=off go get github.com/gopherjs/gopherjs
   - GO111MODULE=off go get github.com/gopherjs/gopherwasm/js
-  - mkdir /tmp/google-chrome-bin
-  - ln -s /usr/bin/google-chrome-stable /tmp/google-chrome-bin/google-chrome
-  - export PATH=/tmp/google-chrome-bin:$PATH
-  - curl -s https://chromedriver.storage.googleapis.com/2.38/chromedriver_linux64.zip > /tmp/chromedriver_linux64.zip
-  - unzip -d /tmp/chromedriver_linux64 /tmp/chromedriver_linux64.zip
-  - export PATH=/tmp/chromedriver_linux64:$PATH
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then mkdir /tmp/google-chrome-bin; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then ln -s /usr/bin/google-chrome-stable /tmp/google-chrome-bin/google-chrome; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then export PATH=/tmp/google-chrome-bin:$PATH; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then curl -s https://chromedriver.storage.googleapis.com/2.38/chromedriver_linux64.zip > /tmp/chromedriver_linux64.zip; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then unzip -d /tmp/chromedriver_linux64 /tmp/chromedriver_linux64.zip; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then export PATH=/tmp/chromedriver_linux64:$PATH; fi
 
 before_script:
   - export DISPLAY=:99.0
-  - sh -e /etc/init.d/xvfb start
-  - sleep 3
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sh -e /etc/init.d/xvfb start; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sleep 3; fi
 
 script:
   - cd /tmp/work
   - go build -tags example -v github.com/hajimehoshi/ebiten/examples/...
   - go test -v github.com/hajimehoshi/ebiten/...
-  - gopherjs build --tags example -v github.com/hajimehoshi/ebiten/examples/blocks
-  - gjbt github.com/hajimehoshi/ebiten # TODO: Test the subdirectories
+  - GOOS=linux gopherjs build --tags example -v github.com/hajimehoshi/ebiten/examples/blocks
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then gjbt github.com/hajimehoshi/ebiten; fi # TODO: Test the subdirectories
   - GOOS=windows GOARCH=amd64 go build -tags example -v github.com/hajimehoshi/ebiten/examples/...
   - GOOS=windows GOARCH=386 go build -tags example -v github.com/hajimehoshi/ebiten/examples/...
 
