@@ -18,8 +18,10 @@ package mobile
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -175,7 +177,13 @@ func (u *UserInterface) RunWithoutMainLoop(width, height int, scale float64, tit
 	return ch
 }
 
-func (u *UserInterface) run(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics, mainloop bool) error {
+func (u *UserInterface) run(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics, mainloop bool) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v\n%q", r, string(debug.Stack()))
+		}
+	}()
+
 	if graphics != opengl.Get() {
 		panic("ui: graphics driver must be OpenGL")
 	}
