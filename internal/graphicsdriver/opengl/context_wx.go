@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build js,!wx
+// +build js,wx
 
 package opengl
 
@@ -47,7 +47,8 @@ func getProgramID(p program) programID {
 
 var (
 	// Accessing the prototype is rquired on Safari.
-	contextPrototype = js.Global().Get("WebGLRenderingContext").Get("prototype")
+	//contextPrototype = js.Global().Get("canvas")
+	contextPrototype = js.Global().Get("canvas").Call("getContext", "webgl")
 
 	vertexShader       = shaderType(contextPrototype.Get("VERTEX_SHADER").Int())
 	fragmentShader     = shaderType(contextPrototype.Get("FRAGMENT_SHADER").Int())
@@ -97,11 +98,7 @@ func (c *context) ensureGL() {
 		return
 	}
 
-	if js.Global().Get("WebGLRenderingContext") == js.Undefined() {
-		panic("opengl: WebGL is not supported")
-	}
-	// TODO: Define id?
-	canvas := js.Global().Get("document").Call("querySelector", "canvas")
+	canvas := js.Global().Get("canvas")
 	attr := js.Global().Get("Object").New()
 	attr.Set("alpha", true)
 	attr.Set("premultipliedAlpha", true)
@@ -309,9 +306,9 @@ func (c *context) newProgram(shaders []shader, attributes []string) (program, er
 	}
 
 	gl.Call("linkProgram", v)
-	if !gl.Call("getProgramParameter", v, linkStatus).Bool() {
-		return program{}, errors.New("opengl: program error")
-	}
+	// if !gl.Call("getProgramParameter", v, linkStatus).Bool() {
+	// 	return program{}, errors.New("opengl: program error")
+	// }
 
 	id := c.lastProgramID
 	c.lastProgramID++
