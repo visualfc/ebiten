@@ -16,23 +16,25 @@ package opengl
 
 import (
 	"fmt"
+	"sync"
 
-	"github.com/hajimehoshi/ebiten/internal/graphics"
+	"github.com/hajimehoshi/ebiten/internal/driver"
+	"github.com/hajimehoshi/ebiten/internal/thread"
 )
 
-func convertOperation(op graphics.Operation) operation {
+func convertOperation(op driver.Operation) operation {
 	switch op {
-	case graphics.Zero:
+	case driver.Zero:
 		return zero
-	case graphics.One:
+	case driver.One:
 		return one
-	case graphics.SrcAlpha:
+	case driver.SrcAlpha:
 		return srcAlpha
-	case graphics.DstAlpha:
+	case driver.DstAlpha:
 		return dstAlpha
-	case graphics.OneMinusSrcAlpha:
+	case driver.OneMinusSrcAlpha:
 		return oneMinusSrcAlpha
-	case graphics.OneMinusDstAlpha:
+	case driver.OneMinusDstAlpha:
 		return oneMinusDstAlpha
 	default:
 		panic(fmt.Sprintf("opengl: invalid operation %d at convertOperation", op))
@@ -46,8 +48,14 @@ type context struct {
 	lastTexture        textureNative
 	lastViewportWidth  int
 	lastViewportHeight int
-	lastCompositeMode  graphics.CompositeMode
+	lastCompositeMode  driver.CompositeMode
 	maxTextureSize     int
+	maxTextureSizeOnce sync.Once
+	highp              bool
+	highpOnce          sync.Once
+
+	t *thread.Thread
+
 	contextImpl
 }
 
@@ -93,8 +101,18 @@ func (c *context) getScreenFramebuffer() framebufferNative {
 }
 
 func (c *context) getMaxTextureSize() int {
-	if c.maxTextureSize == 0 {
+	c.maxTextureSizeOnce.Do(func() {
 		c.maxTextureSize = c.maxTextureSizeImpl()
-	}
+	})
 	return c.maxTextureSize
+}
+
+// highpPrecision represents an enough mantissa of float values in a shader.
+const highpPrecision = 23
+
+func (c *context) hasHighPrecisionFloat() bool {
+	c.highpOnce.Do(func() {
+		c.highp = c.getShaderPrecisionFormatPrecision() >= highpPrecision
+	})
+	return c.highp
 }

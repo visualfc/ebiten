@@ -28,6 +28,15 @@ func SetGraphicsDriver(driver driver.Graphics) {
 	theGraphicsDriver = driver
 }
 
+func NeedsRestoring() bool {
+	if theGraphicsDriver == nil {
+		// This happens on initialization.
+		// Return true for fail-safe
+		return true
+	}
+	return theGraphicsDriver.NeedsRestoring()
+}
+
 // command represents a drawing command.
 //
 // A command for drawing that is created when Image functions are called like DrawTriangles,
@@ -42,7 +51,12 @@ type command interface {
 	NumIndices() int
 	AddNumVertices(n int)
 	AddNumIndices(n int)
-	CanMerge(dst, src *Image, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) bool
+	CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool
+}
+
+type size struct {
+	width  float32
+	height float32
 }
 
 // commandQueue is a command queue for drawing commands.
@@ -61,6 +75,8 @@ type commandQueue struct {
 	// Rename or fix the program.
 	nvertices int
 
+	srcSizes []size
+
 	indices  []uint16
 	nindices int
 
@@ -74,12 +90,18 @@ type commandQueue struct {
 var theCommandQueue = &commandQueue{}
 
 // appendVertices appends vertices to the queue.
-func (q *commandQueue) appendVertices(vertices []float32) {
+func (q *commandQueue) appendVertices(vertices []float32, width, height float32) {
 	if len(q.vertices) < q.nvertices+len(vertices) {
 		n := q.nvertices + len(vertices) - len(q.vertices)
 		q.vertices = append(q.vertices, make([]float32, n)...)
+		q.srcSizes = append(q.srcSizes, make([]size, n/graphics.VertexFloatNum)...)
 	}
 	copy(q.vertices[q.nvertices:], vertices)
+	for i := 0; i < len(vertices)/graphics.VertexFloatNum; i++ {
+		idx := q.nvertices/graphics.VertexFloatNum + i
+		q.srcSizes[idx].width = width
+		q.srcSizes[idx].height = height
+	}
 	q.nvertices += len(vertices)
 }
 
@@ -94,7 +116,7 @@ func (q *commandQueue) appendIndices(indices []uint16, offset uint16) {
 	q.nindices += len(indices)
 }
 
-func (q *commandQueue) doEnqueueDrawTrianglesCommand(dst, src *Image, nvertices, nindices int, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address, forceNewCommand bool) {
+func (q *commandQueue) doEnqueueDrawTrianglesCommand(dst, src *Image, nvertices, nindices int, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address, forceNewCommand bool) {
 	if nindices > graphics.IndicesNum {
 		panic(fmt.Sprintf("graphicscommand: nindices must be <= graphics.IndicesNum but not at doEnqueueDrawTrianglesCommand: nindices: %d, graphics.IndicesNum: %d", nindices, graphics.IndicesNum))
 	}
@@ -119,7 +141,7 @@ func (q *commandQueue) doEnqueueDrawTrianglesCommand(dst, src *Image, nvertices,
 }
 
 // EnqueueDrawTrianglesCommand enqueues a drawing-image command.
-func (q *commandQueue) EnqueueDrawTrianglesCommand(dst, src *Image, vertices []float32, indices []uint16, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) {
+func (q *commandQueue) EnqueueDrawTrianglesCommand(dst, src *Image, vertices []float32, indices []uint16, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	if len(indices) > graphics.IndicesNum {
 		panic(fmt.Sprintf("graphicscommand: len(indices) must be <= graphics.IndicesNum but not at EnqueueDrawTrianglesCommand: len(indices): %d, graphics.IndicesNum: %d", len(indices), graphics.IndicesNum))
 	}
@@ -131,9 +153,10 @@ func (q *commandQueue) EnqueueDrawTrianglesCommand(dst, src *Image, vertices []f
 		split = true
 	}
 
-	q.appendVertices(vertices)
+	n := len(vertices) / graphics.VertexFloatNum
+	q.appendVertices(vertices, float32(graphics.InternalImageSize(src.width)), float32(graphics.InternalImageSize(src.height)))
 	q.appendIndices(indices, uint16(q.nextIndex))
-	q.nextIndex += len(vertices) / graphics.VertexFloatNum
+	q.nextIndex += n
 	q.tmpNumIndices += len(indices)
 
 	// TODO: If dst is the screen, reorder the command to be the last.
@@ -158,6 +181,16 @@ func (q *commandQueue) Flush() {
 	vs := q.vertices
 	if recordLog() {
 		fmt.Println("--")
+	}
+
+	if theGraphicsDriver.HasHighPrecisionFloat() {
+		// Adjust texels.
+		const texelAdjustmentFactor = 1.0 / 512.0
+		for i := 0; i < q.nvertices/graphics.VertexFloatNum; i++ {
+			s := q.srcSizes[i]
+			vs[i*graphics.VertexFloatNum+6] -= 1.0 / s.width * texelAdjustmentFactor
+			vs[i*graphics.VertexFloatNum+7] -= 1.0 / s.height * texelAdjustmentFactor
+		}
 	}
 
 	theGraphicsDriver.Begin()
@@ -226,9 +259,9 @@ type drawTrianglesCommand struct {
 	nvertices int
 	nindices  int
 	color     *affine.ColorM
-	mode      graphics.CompositeMode
-	filter    graphics.Filter
-	address   graphics.Address
+	mode      driver.CompositeMode
+	filter    driver.Filter
+	address   driver.Address
 }
 
 func (c *drawTrianglesCommand) String() string {
@@ -268,7 +301,7 @@ func (c *drawTrianglesCommand) AddNumIndices(n int) {
 
 // CanMerge returns a boolean value indicating whether the other drawTrianglesCommand can be merged
 // with the drawTrianglesCommand c.
-func (c *drawTrianglesCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) bool {
+func (c *drawTrianglesCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool {
 	if c.dst != dst {
 		return false
 	}
@@ -324,7 +357,7 @@ func (c *replacePixelsCommand) AddNumVertices(n int) {
 func (c *replacePixelsCommand) AddNumIndices(n int) {
 }
 
-func (c *replacePixelsCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) bool {
+func (c *replacePixelsCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool {
 	return false
 }
 
@@ -363,7 +396,7 @@ func (c *copyPixelsCommand) AddNumVertices(n int) {
 func (c *copyPixelsCommand) AddNumIndices(n int) {
 }
 
-func (c *copyPixelsCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) bool {
+func (c *copyPixelsCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool {
 	return false
 }
 
@@ -400,7 +433,7 @@ func (c *pixelsCommand) AddNumVertices(n int) {
 func (c *pixelsCommand) AddNumIndices(n int) {
 }
 
-func (c *pixelsCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) bool {
+func (c *pixelsCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool {
 	return false
 }
 
@@ -433,7 +466,7 @@ func (c *disposeCommand) AddNumVertices(n int) {
 func (c *disposeCommand) AddNumIndices(n int) {
 }
 
-func (c *disposeCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) bool {
+func (c *disposeCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool {
 	return false
 }
 
@@ -472,7 +505,7 @@ func (c *newImageCommand) AddNumVertices(n int) {
 func (c *newImageCommand) AddNumIndices(n int) {
 }
 
-func (c *newImageCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) bool {
+func (c *newImageCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool {
 	return false
 }
 
@@ -508,7 +541,7 @@ func (c *newScreenFramebufferImageCommand) AddNumVertices(n int) {
 func (c *newScreenFramebufferImageCommand) AddNumIndices(n int) {
 }
 
-func (c *newScreenFramebufferImageCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) bool {
+func (c *newScreenFramebufferImageCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool {
 	return false
 }
 

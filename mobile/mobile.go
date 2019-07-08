@@ -21,6 +21,7 @@
 package mobile
 
 import (
+	"runtime"
 	"sync"
 
 	"github.com/hajimehoshi/ebiten"
@@ -63,6 +64,9 @@ func Start(f func(*ebiten.Image) error, width, height int, scale float64, title 
 //
 // Update returns error when 1) OpenGL error happens, or 2) f in Start returns error samely as ebiten.Run.
 func Update() error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	mobileMutex.Lock()
 	defer mobileMutex.Unlock()
 

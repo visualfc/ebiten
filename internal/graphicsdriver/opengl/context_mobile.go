@@ -22,7 +22,7 @@ import (
 
 	mgl "golang.org/x/mobile/gl"
 
-	"github.com/hajimehoshi/ebiten/internal/graphics"
+	"github.com/hajimehoshi/ebiten/internal/driver"
 )
 
 type (
@@ -69,26 +69,7 @@ const (
 )
 
 type contextImpl struct {
-	gl     mgl.Context
-	worker mgl.Worker
-}
-
-func (c *context) doWork(chDone <-chan struct{}) error {
-	if c.worker == nil {
-		panic("opengl: worker must be initialized but not")
-	}
-	// TODO: Check this is called on the rendering thread
-	workAvailable := c.worker.WorkAvailable()
-loop:
-	for {
-		select {
-		case <-workAvailable:
-			c.worker.DoWork()
-		case <-chDone:
-			break loop
-		}
-	}
-	return nil
+	gl mgl.Context
 }
 
 func (c *context) reset() error {
@@ -97,16 +78,16 @@ func (c *context) reset() error {
 	c.lastFramebuffer = invalidFramebuffer
 	c.lastViewportWidth = 0
 	c.lastViewportHeight = 0
-	c.lastCompositeMode = graphics.CompositeModeUnknown
+	c.lastCompositeMode = driver.CompositeModeUnknown
 	c.gl.Enable(mgl.BLEND)
-	c.blendFunc(graphics.CompositeModeSourceOver)
+	c.blendFunc(driver.CompositeModeSourceOver)
 	f := c.gl.GetInteger(mgl.FRAMEBUFFER_BINDING)
 	c.screenFramebuffer = framebufferNative(mgl.Framebuffer{uint32(f)})
 	// TODO: Need to update screenFramebufferWidth/Height?
 	return nil
 }
 
-func (c *context) blendFunc(mode graphics.CompositeMode) {
+func (c *context) blendFunc(mode driver.CompositeMode) {
 	gl := c.gl
 	if c.lastCompositeMode == mode {
 		return
@@ -374,7 +355,17 @@ func (c *context) maxTextureSizeImpl() int {
 	return gl.GetInteger(mgl.MAX_TEXTURE_SIZE)
 }
 
+func (c *context) getShaderPrecisionFormatPrecision() int {
+	gl := c.gl
+	_, _, p := gl.GetShaderPrecisionFormat(mgl.FRAGMENT_SHADER, mgl.HIGH_FLOAT)
+	return p
+}
+
 func (c *context) flush() {
 	gl := c.gl
 	gl.Flush()
+}
+
+func (c *context) needsRestoring() bool {
+	return true
 }

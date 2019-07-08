@@ -21,98 +21,10 @@ import (
 	"math"
 	"sync/atomic"
 
+	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
 	"github.com/hajimehoshi/ebiten/internal/shareable"
 )
-
-type mipmap struct {
-	orig *shareable.Image
-	imgs map[image.Rectangle][]*shareable.Image
-}
-
-func newMipmap(s *shareable.Image) *mipmap {
-	return &mipmap{
-		orig: s,
-		imgs: map[image.Rectangle][]*shareable.Image{},
-	}
-}
-
-func (m *mipmap) original() *shareable.Image {
-	return m.orig
-}
-
-func (m *mipmap) level(r image.Rectangle, level int) *shareable.Image {
-	if level <= 0 {
-		panic("ebiten: level must be positive at level")
-	}
-
-	imgs, ok := m.imgs[r]
-	if !ok {
-		imgs = []*shareable.Image{}
-		m.imgs[r] = imgs
-	}
-	idx := level - 1
-
-	size := r.Size()
-	w, h := size.X, size.Y
-	if len(imgs) > 0 {
-		w, h = imgs[len(imgs)-1].Size()
-	}
-
-	for len(imgs) < idx+1 {
-		if m.orig.IsVolatile() {
-			panic("ebiten: mipmap images for a volatile image is not implemented yet")
-		}
-
-		w2 := w / 2
-		h2 := h / 2
-		if w2 == 0 || h2 == 0 {
-			return nil
-		}
-		s := shareable.NewImage(w2, h2)
-		var src *shareable.Image
-		var vs []float32
-		if l := len(imgs); l == 0 {
-			src = m.orig
-			vs = src.QuadVertices(r.Min.X, r.Min.Y, r.Max.X, r.Max.Y, 0.5, 0, 0, 0.5, 0, 0, 1, 1, 1, 1)
-		} else {
-			src = m.level(r, l)
-			vs = src.QuadVertices(0, 0, w, h, 0.5, 0, 0, 0.5, 0, 0, 1, 1, 1, 1)
-		}
-		is := graphics.QuadIndices()
-		s.DrawTriangles(src, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterLinear, graphics.AddressClampToZero)
-		imgs = append(imgs, s)
-		w = w2
-		h = h2
-	}
-	m.imgs[r] = imgs
-
-	if len(imgs) <= idx {
-		return nil
-	}
-	return imgs[idx]
-}
-
-func (m *mipmap) isDisposed() bool {
-	return m.orig == nil
-}
-
-func (m *mipmap) dispose() {
-	m.disposeMipmaps()
-	m.orig.Dispose()
-	m.orig = nil
-}
-
-func (m *mipmap) disposeMipmaps() {
-	for _, a := range m.imgs {
-		for _, img := range a {
-			img.Dispose()
-		}
-	}
-	for k := range m.imgs {
-		delete(m.imgs, k)
-	}
-}
 
 // Image represents a rectangle set of pixels.
 // The pixel format is alpha-premultiplied RGBA.
@@ -236,17 +148,12 @@ func (i *Image) disposeMipmaps() {
 //
 // DrawImage always returns nil as of 1.5.0-alpha.
 func (i *Image) DrawImage(img *Image, options *DrawImageOptions) error {
-	i.drawImage(img, options)
-	return nil
-}
-
-func (i *Image) drawImage(img *Image, options *DrawImageOptions) {
 	i.copyCheck()
 	if img.isDisposed() {
 		panic("ebiten: the given image to DrawImage must not be disposed")
 	}
 	if i.isDisposed() {
-		return
+		return nil
 	}
 
 	// TODO: Implement this.
@@ -287,7 +194,7 @@ func (i *Image) drawImage(img *Image, options *DrawImageOptions) {
 			op.GeoM.Concat(options.GeoM)
 			i.DrawImage(img.SubImage(image.Rect(sx0, sy0, sx1, sy1)).(*Image), op)
 		}
-		return
+		return nil
 	}
 
 	bounds := img.Bounds()
@@ -296,32 +203,32 @@ func (i *Image) drawImage(img *Image, options *DrawImageOptions) {
 	if options.SourceRect != nil {
 		bounds = bounds.Intersect(*options.SourceRect)
 		if bounds.Empty() {
-			return
+			return nil
 		}
 	}
 
 	geom := &options.GeoM
-	mode := graphics.CompositeMode(options.CompositeMode)
+	mode := driver.CompositeMode(options.CompositeMode)
 
-	filter := graphics.FilterNearest
+	filter := driver.FilterNearest
 	if options.Filter != FilterDefault {
-		filter = graphics.Filter(options.Filter)
+		filter = driver.Filter(options.Filter)
 	} else if img.filter != FilterDefault {
-		filter = graphics.Filter(img.filter)
+		filter = driver.Filter(img.filter)
 	}
 
 	a, b, c, d, tx, ty := geom.elements()
 
 	level := 0
-	if filter == graphics.FilterLinear && !img.mipmap.original().IsVolatile() {
+	if filter == driver.FilterLinear && !img.mipmap.original().IsVolatile() {
 		det := geom.det()
 		if det == 0 {
-			return
+			return nil
 		}
 		if math.IsNaN(float64(det)) {
-			return
+			return nil
 		}
-		level = graphics.MipmapLevel(det)
+		level = mipmapLevel(det)
 		if level < 0 {
 			panic(fmt.Sprintf("ebiten: level must be >= 0 but %d", level))
 		}
@@ -339,7 +246,7 @@ func (i *Image) drawImage(img *Image, options *DrawImageOptions) {
 
 		if level < 0 {
 			// As the render source is too small, nothing is rendered.
-			return
+			return nil
 		}
 	}
 	if level > 6 {
@@ -360,9 +267,10 @@ func (i *Image) drawImage(img *Image, options *DrawImageOptions) {
 
 	if level == 0 {
 		src := img.mipmap.original()
-		vs := src.QuadVertices(bounds.Min.X, bounds.Min.Y, bounds.Max.X, bounds.Max.Y, a, b, c, d, tx, ty, cr, cg, cb, ca)
+		vs := vertexSlice(4)
+		graphics.PutQuadVertices(vs, src, bounds.Min.X, bounds.Min.Y, bounds.Max.X, bounds.Max.Y, a, b, c, d, tx, ty, cr, cg, cb, ca)
 		is := graphics.QuadIndices()
-		i.mipmap.original().DrawTriangles(src, vs, is, colorm, mode, filter, graphics.AddressClampToZero)
+		i.mipmap.original().DrawTriangles(src, vs, is, colorm, mode, filter, driver.AddressClampToZero)
 	} else if src := img.mipmap.level(bounds, level); src != nil {
 		w, h := src.Size()
 		s := 1 << uint(level)
@@ -370,11 +278,13 @@ func (i *Image) drawImage(img *Image, options *DrawImageOptions) {
 		b *= float32(s)
 		c *= float32(s)
 		d *= float32(s)
-		vs := src.QuadVertices(0, 0, w, h, a, b, c, d, tx, ty, cr, cg, cb, ca)
+		vs := vertexSlice(4)
+		graphics.PutQuadVertices(vs, src, 0, 0, w, h, a, b, c, d, tx, ty, cr, cg, cb, ca)
 		is := graphics.QuadIndices()
-		i.mipmap.original().DrawTriangles(src, vs, is, colorm, mode, filter, graphics.AddressClampToZero)
+		i.mipmap.original().DrawTriangles(src, vs, is, colorm, mode, filter, driver.AddressClampToZero)
 	}
 	i.disposeMipmaps()
+	return nil
 }
 
 // Vertex represents a vertex passed to DrawTriangles.
@@ -405,10 +315,10 @@ type Address int
 
 const (
 	// AddressClampToZero means that out-of-range texture coordinates return 0 (transparent).
-	AddressClampToZero Address = Address(graphics.AddressClampToZero)
+	AddressClampToZero Address = Address(driver.AddressClampToZero)
 
 	// AddressRepeat means that texture coordinates wrap to the other side of the texture.
-	AddressRepeat Address = Address(graphics.AddressRepeat)
+	AddressRepeat Address = Address(driver.AddressRepeat)
 )
 
 // DrawTrianglesOptions represents options to render triangles on an image.
@@ -474,16 +384,16 @@ func (i *Image) DrawTriangles(vertices []Vertex, indices []uint16, img *Image, o
 		options = &DrawTrianglesOptions{}
 	}
 
-	mode := graphics.CompositeMode(options.CompositeMode)
+	mode := driver.CompositeMode(options.CompositeMode)
 
-	filter := graphics.FilterNearest
+	filter := driver.FilterNearest
 	if options.Filter != FilterDefault {
-		filter = graphics.Filter(options.Filter)
+		filter = driver.Filter(options.Filter)
 	} else if img.filter != FilterDefault {
-		filter = graphics.Filter(img.filter)
+		filter = driver.Filter(img.filter)
 	}
 
-	vs := make([]float32, len(vertices)*graphics.VertexFloatNum)
+	vs := vertexSlice(len(vertices))
 	src := img.mipmap.original()
 	r := img.Bounds()
 	for idx, v := range vertices {
@@ -492,7 +402,7 @@ func (i *Image) DrawTriangles(vertices []Vertex, indices []uint16, img *Image, o
 			float32(r.Min.X), float32(r.Min.Y), float32(r.Max.X), float32(r.Max.Y),
 			v.ColorR, v.ColorG, v.ColorB, v.ColorA)
 	}
-	i.mipmap.original().DrawTriangles(img.mipmap.original(), vs, indices, options.ColorM.impl, mode, filter, graphics.Address(options.Address))
+	i.mipmap.original().DrawTriangles(img.mipmap.original(), vs, indices, options.ColorM.impl, mode, filter, driver.Address(options.Address))
 	i.disposeMipmaps()
 }
 
@@ -783,7 +693,7 @@ func NewImageFromImage(source image.Image, filter Filter) (*Image, error) {
 	}
 	i.addr = i
 
-	_ = i.ReplacePixels(graphics.CopyImage(source))
+	_ = i.ReplacePixels(copyImage(source))
 	return i, nil
 }
 

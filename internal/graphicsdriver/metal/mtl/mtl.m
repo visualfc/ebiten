@@ -28,29 +28,18 @@ struct Device CreateSystemDefaultDevice() {
 
   struct Device d;
   d.Device = device;
+#if !TARGET_OS_IPHONE
   d.Headless = device.headless;
   d.LowPower = device.lowPower;
+#else
+  d.Headless = 0;
+  d.LowPower = 0;
+#endif
   d.Name = device.name.UTF8String;
   return d;
 }
 
-// Caller must call free(d.devices).
-struct Devices CopyAllDevices() {
-  NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
-
-  struct Devices d;
-  d.Devices = malloc(devices.count * sizeof(struct Device));
-  for (int i = 0; i < devices.count; i++) {
-    d.Devices[i].Device = devices[i];
-    d.Devices[i].Headless = devices[i].headless;
-    d.Devices[i].LowPower = devices[i].lowPower;
-    d.Devices[i].Name = devices[i].name.UTF8String;
-  }
-  d.Length = devices.count;
-  return d;
-}
-
-BOOL Device_SupportsFeatureSet(void *device, uint16_t featureSet) {
+uint8_t Device_SupportsFeatureSet(void *device, uint16_t featureSet) {
   return [(id<MTLDevice>)device supportsFeatureSet:featureSet];
 }
 
@@ -273,17 +262,21 @@ void RenderCommandEncoder_DrawIndexedPrimitives(
 }
 
 void BlitCommandEncoder_Synchronize(void *blitCommandEncoder, void *resource) {
+#if !TARGET_OS_IPHONE
   [(id<MTLBlitCommandEncoder>)blitCommandEncoder
       synchronizeResource:(id<MTLResource>)resource];
+#endif
 }
 
 void BlitCommandEncoder_SynchronizeTexture(void *blitCommandEncoder,
                                            void *texture, uint_t slice,
                                            uint_t level) {
+#if !TARGET_OS_IPHONE
   [(id<MTLBlitCommandEncoder>)blitCommandEncoder
       synchronizeTexture:(id<MTLTexture>)texture
                    slice:(NSUInteger)slice
                    level:(NSUInteger)level];
+#endif
 }
 
 void *Library_MakeFunction(void *library, const char *name) {

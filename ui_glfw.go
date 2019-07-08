@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build darwin freebsd linux windows
-// +build !js
+// +build darwin freebsd linux,cgo windows
 // +build !android
 // +build !ios
+// +build !js
 
 package ebiten
 

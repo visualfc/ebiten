@@ -1,4 +1,4 @@
-// Copyright 2019 The Ebiten Authors
+// Copyright 2018 The Ebiten Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,20 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build darwin
-// +build !ios
+// +build android freebsd ios js linux,cgo windows
 
-package metal
+// As the Go playground tries to compile this with CGO_ENABLED=0 and GOOS=linux, check Cgo on build tags.
+
+package ebiten
 
 import (
-	"unsafe"
-
-	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/metal/ca"
-	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/metal/ns"
+	"github.com/hajimehoshi/ebiten/internal/driver"
+	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/opengl"
 )
 
-func setView(window uintptr, layer ca.MetalLayer) {
-	cocoaWindow := ns.NewWindow(unsafe.Pointer(window))
-	cocoaWindow.ContentView().SetLayer(layer)
-	cocoaWindow.ContentView().SetWantsLayer(true)
+func graphicsDriver() driver.Graphics {
+	return opengl.Get()
 }

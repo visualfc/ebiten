@@ -1,4 +1,4 @@
-// Copyright 2017 The Ebiten Authors
+// Copyright 2018 The Ebiten Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,15 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build darwin freebsd linux windows
-// +build !js
-// +build !android
-// +build !ios
+package driver
 
-package restorable
+type Filter int
 
-func init() {
-	// OpenGL (not ES) never causes context lost,
-	// so restorable feature is not needed.
-	restoringEnabled = false
-}
+const (
+	FilterNearest Filter = iota + 1 // TODO: Remove '+ 1' when ebiten.FilterDefault can be removed.
+	FilterLinear
+	FilterScreen
+)
+
+type Address int
+
+const (
+	AddressClampToZero Address = iota
+	AddressRepeat
+)

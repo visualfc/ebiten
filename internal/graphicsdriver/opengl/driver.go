@@ -20,6 +20,7 @@ import (
 	"github.com/hajimehoshi/ebiten/internal/affine"
 	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
+	"github.com/hajimehoshi/ebiten/internal/thread"
 )
 
 var theDriver Driver
@@ -31,6 +32,10 @@ func Get() *Driver {
 type Driver struct {
 	state   openGLState
 	context context
+}
+
+func (d *Driver) SetThread(thread *thread.Thread) {
+	d.context.t = thread
 }
 
 func (d *Driver) Begin() {
@@ -102,7 +107,7 @@ func (d *Driver) SetVertices(vertices []float32, indices []uint16) {
 	d.context.elementArrayBufferSubData(indices)
 }
 
-func (d *Driver) Draw(indexLen int, indexOffset int, mode graphics.CompositeMode, colorM *affine.ColorM, filter graphics.Filter, address graphics.Address) error {
+func (d *Driver) Draw(indexLen int, indexOffset int, mode driver.CompositeMode, colorM *affine.ColorM, filter driver.Filter, address driver.Address) error {
 	if err := d.useProgram(mode, colorM, filter, address); err != nil {
 		return err
 	}
@@ -126,6 +131,18 @@ func (d *Driver) VDirection() driver.VDirection {
 	return driver.VDownward
 }
 
+func (d *Driver) NeedsRestoring() bool {
+	return d.context.needsRestoring()
+}
+
 func (d *Driver) IsGL() bool {
 	return true
+}
+
+func (d *Driver) HasHighPrecisionFloat() bool {
+	return d.context.hasHighPrecisionFloat()
+}
+
+func (d *Driver) MaxImageSize() int {
+	return d.context.getMaxTextureSize()
 }

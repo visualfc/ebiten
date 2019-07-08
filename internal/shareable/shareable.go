@@ -21,14 +21,50 @@ import (
 	"sync"
 
 	"github.com/hajimehoshi/ebiten/internal/affine"
+	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
 	"github.com/hajimehoshi/ebiten/internal/hooks"
 	"github.com/hajimehoshi/ebiten/internal/packing"
 	"github.com/hajimehoshi/ebiten/internal/restorable"
 )
 
+var graphicsDriver driver.Graphics
+
+func SetGraphicsDriver(graphics driver.Graphics) {
+	graphicsDriver = graphics
+}
+
+var (
+	minSize = 0
+	maxSize = 0
+)
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func init() {
+	var once sync.Once
 	hooks.AppendHookOnBeforeUpdate(func() error {
+		backendsM.Lock()
+		defer backendsM.Unlock()
+		once.Do(func() {
+			if len(theBackends) != 0 {
+				panic("shareable: all the images must be not-shared before the game starts")
+			}
+			if graphicsDriver.HasHighPrecisionFloat() {
+				minSize = 1024
+				// Use 4096 as a maximum size whatever size the graphics driver accepts. There are
+				// not enough evidences that bigger textures works correctly.
+				maxSize = min(4096, graphicsDriver.MaxImageSize())
+			} else {
+				minSize = 512
+				maxSize = 512
+			}
+		})
 		makeImagesShared()
 		return nil
 	})
@@ -40,9 +76,6 @@ func init() {
 const MaxCountForShare = 10
 
 func makeImagesShared() {
-	backendsM.Lock()
-	defer backendsM.Unlock()
-
 	for i := range imagesToMakeShared {
 		i.nonUpdatedCount++
 		if i.nonUpdatedCount >= MaxCountForShare {
@@ -55,11 +88,6 @@ func makeImagesShared() {
 func MakeImagesSharedForTesting() {
 	makeImagesShared()
 }
-
-const (
-	initSize = 1024
-	maxSize  = 4096
-)
 
 type backend struct {
 	restorable *restorable.Image
@@ -118,6 +146,15 @@ var (
 	imagesToMakeShared = map[*Image]struct{}{}
 )
 
+// isShareable reports whether the new allocation can use the shareable backends.
+//
+// isShareable retruns false before the graphics driver is available.
+// After the graphics driver is available, read-only images will be automatically on the shareable backends by
+// (*Image).makeShared().
+func isShareable() bool {
+	return minSize > 0 && maxSize > 0
+}
+
 type Image struct {
 	width    int
 	height   int
@@ -169,11 +206,12 @@ func (i *Image) ensureNotShared() {
 		return
 	}
 
-	x, y, w, h := i.region()
+	_, _, w, h := i.region()
 	newImg := restorable.NewImage(w, h)
-	vs := i.backend.restorable.QuadVertices(x, y, x+w, y+h, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1)
+	vs := make([]float32, 4*graphics.VertexFloatNum)
+	graphics.PutQuadVertices(vs, i, 0, 0, w, h, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1)
 	is := graphics.QuadIndices()
-	newImg.DrawTriangles(i.backend.restorable, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterNearest, graphics.AddressClampToZero)
+	newImg.DrawTriangles(i.backend.restorable, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 
 	i.dispose(false)
 	i.backend = &backend{
@@ -226,29 +264,17 @@ func (i *Image) Size() (width, height int) {
 	return i.width, i.height
 }
 
-// QuadVertices returns the vertices for rendering a quad.
-//
-// QuadVertices is highly optimized for rendering quads, and that's the most significant difference from
-// PutVertices.
-func (i *Image) QuadVertices(sx0, sy0, sx1, sy1 int, a, b, c, d, tx, ty float32, cr, cg, cb, ca float32) []float32 {
-	if i.backend == nil {
-		i.allocate(true)
-	}
-	ox, oy, _, _ := i.region()
-	return i.backend.restorable.QuadVertices(sx0+ox, sy0+oy, sx1+ox, sy1+oy, a, b, c, d, tx, ty, cr, cg, cb, ca)
-}
-
-// PutVertices puts the given dest with vertices that can be passed to DrawTriangles.
-func (i *Image) PutVertex(dest []float32, dx, dy, sx, sy float32, bx0, by0, bx1, by1 float32, cr, cg, cb, ca float32) {
+// PutVertices puts the given dst with vertices that can be passed to DrawTriangles.
+func (i *Image) PutVertex(dst []float32, dx, dy, sx, sy float32, bx0, by0, bx1, by1 float32, cr, cg, cb, ca float32) {
 	if i.backend == nil {
 		i.allocate(true)
 	}
 	ox, oy, _, _ := i.region()
 	oxf, oyf := float32(ox), float32(oy)
-	i.backend.restorable.PutVertex(dest, dx, dy, sx+oxf, sy+oyf, bx0+oxf, by0+oyf, bx1+oxf, by1+oyf, cr, cg, cb, ca)
+	i.backend.restorable.PutVertex(dst, dx, dy, sx+oxf, sy+oyf, bx0+oxf, by0+oyf, bx1+oxf, by1+oyf, cr, cg, cb, ca)
 }
 
-func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) {
+func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	backendsM.Lock()
 	defer backendsM.Unlock()
 
@@ -404,13 +430,6 @@ func (i *Image) IsVolatile() bool {
 	return i.backend.restorable.IsVolatile()
 }
 
-func (i *Image) IsInvalidated() (bool, error) {
-	backendsM.Lock()
-	defer backendsM.Unlock()
-	v, err := i.backend.restorable.IsInvalidated()
-	return v, err
-}
-
 func NewImage(width, height int) *Image {
 	// Actual allocation is done lazily.
 	return &Image{
@@ -420,6 +439,9 @@ func NewImage(width, height int) *Image {
 }
 
 func (i *Image) shareable() bool {
+	if !isShareable() {
+		return false
+	}
 	if i.neverShared {
 		return false
 	}
@@ -447,7 +469,7 @@ func (i *Image) allocate(shareable bool) {
 			return
 		}
 	}
-	size := initSize
+	size := minSize
 	for i.width > size || i.height > size {
 		if size == maxSize {
 			panic(fmt.Sprintf("shareable: the image being shared is too big: width: %d, height: %d", i.width, i.height))
@@ -468,7 +490,6 @@ func (i *Image) allocate(shareable bool) {
 	i.backend = b
 	i.node = n
 	runtime.SetFinalizer(i, (*Image).Dispose)
-	return
 }
 
 func (i *Image) MakeVolatile() {
@@ -509,15 +530,10 @@ func ResolveStaleImages() {
 	restorable.ResolveStaleImages()
 }
 
-func IsRestoringEnabled() bool {
-	// As IsRestoringEnabled is an immutable state, no need to lock here.
-	return restorable.IsRestoringEnabled()
-}
-
-func Restore() error {
+func RestoreIfNeeded() error {
 	backendsM.Lock()
 	defer backendsM.Unlock()
-	return restorable.Restore()
+	return restorable.RestoreIfNeeded()
 }
 
 func Images() []image.Image {

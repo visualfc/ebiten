@@ -30,7 +30,7 @@ import (
 	"unsafe"
 )
 
-// #cgo CFLAGS: -mmacosx-version-min=10.11
+// #cgo !ios CFLAGS: -mmacosx-version-min=10.11
 // #cgo LDFLAGS: -framework Metal -framework Foundation
 //
 // #include <stdlib.h>
@@ -403,25 +403,6 @@ func CreateSystemDefaultDevice() (Device, error) {
 	}, nil
 }
 
-// CopyAllDevices returns all Metal devices in the system.
-//
-// Reference: https://developer.apple.com/documentation/metal/1433367-mtlcopyalldevices.
-func CopyAllDevices() []Device {
-	d := C.CopyAllDevices()
-	defer C.free(unsafe.Pointer(d.Devices))
-
-	ds := make([]Device, d.Length)
-	for i := 0; i < len(ds); i++ {
-		d := (*C.struct_Device)(unsafe.Pointer(uintptr(unsafe.Pointer(d.Devices)) + uintptr(i)*C.sizeof_struct_Device))
-
-		ds[i].device = d.Device
-		ds[i].Headless = d.Headless != 0
-		ds[i].LowPower = d.LowPower != 0
-		ds[i].Name = C.GoString(d.Name)
-	}
-	return ds
-}
-
 // Device returns the underlying id<MTLDevice> pointer.
 func (d Device) Device() unsafe.Pointer { return d.device }
 
@@ -456,16 +437,16 @@ func (d Device) MakeLibrary(source string, opt CompileOptions) (Library, error) 
 //
 // Reference: https://developer.apple.com/documentation/metal/mtldevice/1433369-makerenderpipelinestate.
 func (d Device) MakeRenderPipelineState(rpd RenderPipelineDescriptor) (RenderPipelineState, error) {
-	blendingEnabled := C.BOOL(0)
+	blendingEnabled := 0
 	if rpd.ColorAttachments[0].BlendingEnabled {
-		blendingEnabled = C.BOOL(1)
+		blendingEnabled = 1
 	}
 	c := &rpd.ColorAttachments[0]
 	descriptor := C.struct_RenderPipelineDescriptor{
 		VertexFunction:                              rpd.VertexFunction.function,
 		FragmentFunction:                            rpd.FragmentFunction.function,
 		ColorAttachment0PixelFormat:                 C.uint16_t(c.PixelFormat),
-		ColorAttachment0BlendingEnabled:             C.BOOL(blendingEnabled),
+		ColorAttachment0BlendingEnabled:             C.uint8_t(blendingEnabled),
 		ColorAttachment0DestinationAlphaBlendFactor: C.uint8_t(c.DestinationAlphaBlendFactor),
 		ColorAttachment0DestinationRGBBlendFactor:   C.uint8_t(c.DestinationRGBBlendFactor),
 		ColorAttachment0SourceAlphaBlendFactor:      C.uint8_t(c.SourceAlphaBlendFactor),

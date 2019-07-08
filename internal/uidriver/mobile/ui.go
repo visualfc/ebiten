@@ -17,9 +17,8 @@
 package mobile
 
 import (
-	"errors"
+	"context"
 	"image"
-	"runtime"
 	"sync"
 	"time"
 
@@ -37,9 +36,14 @@ import (
 
 var (
 	glContextCh = make(chan gl.Context)
-	renderCh    = make(chan struct{})
-	renderChEnd = make(chan struct{})
-	theUI       = &UserInterface{}
+
+	// renderCh recieves when updating starts.
+	renderCh = make(chan struct{})
+
+	// renderEndCh receives when updating finishes.
+	renderEndCh = make(chan struct{})
+
+	theUI = &UserInterface{}
 )
 
 func init() {
@@ -50,23 +54,32 @@ func Get() *UserInterface {
 	return theUI
 }
 
-func (u *UserInterface) Render(chError <-chan error) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+func (u *UserInterface) Render() {
+	renderCh <- struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-renderEndCh
+		cancel()
+	}()
 
-	if chError == nil {
-		return errors.New("ui: chError must not be nil")
+	if u.graphics.IsGL() {
+		if u.glWorker == nil {
+			panic("mobile: glWorker must be initialized but not")
+		}
+		workAvailable := u.glWorker.WorkAvailable()
+	loop:
+		for {
+			select {
+			case <-workAvailable:
+				u.glWorker.DoWork()
+			case <-ctx.Done():
+				break loop
+			}
+		}
+		return
 	}
-	// TODO: Check this is called on the rendering thread
-	select {
-	case err := <-chError:
-		return err
-	case renderCh <- struct{}{}:
-		return opengl.Get().DoWork(renderChEnd)
-	case <-time.After(500 * time.Millisecond):
-		// This function must not be blocked. We need to break for timeout.
-		return nil
-	}
+
+	// TODO: Create and run the thread loop like the GLFW driver does.
 }
 
 type UserInterface struct {
@@ -80,7 +93,11 @@ type UserInterface struct {
 	fullscreenWidthPx  int
 	fullscreenHeightPx int
 
+	graphics driver.Graphics
+
 	input Input
+
+	glWorker gl.Worker
 
 	m sync.RWMutex
 }
@@ -127,7 +144,7 @@ func (u *UserInterface) appMain(a app.App) {
 				continue
 			}
 			renderCh <- struct{}{}
-			<-renderChEnd
+			<-renderEndCh
 			a.Publish()
 			a.Send(paint.Event{})
 		case touch.Event:
@@ -176,23 +193,23 @@ func (u *UserInterface) RunWithoutMainLoop(width, height int, scale float64, tit
 }
 
 func (u *UserInterface) run(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics, mainloop bool) error {
-	if graphics != opengl.Get() {
-		panic("ui: graphics driver must be OpenGL")
-	}
-
 	u.m.Lock()
 	u.width = width
 	u.height = height
 	u.scale = scale
 	u.sizeChanged = true
+	u.graphics = graphics
 	u.m.Unlock()
 	// title is ignored?
 
-	if mainloop {
-		ctx := <-glContextCh
-		opengl.Get().InitWithContext(ctx)
-	} else {
-		opengl.Get().Init()
+	if graphics.IsGL() {
+		var ctx gl.Context
+		if mainloop {
+			ctx = <-glContextCh
+		} else {
+			ctx, u.glWorker = gl.NewContext()
+		}
+		graphics.(*opengl.Driver).SetMobileGLContext(ctx)
 	}
 
 	// Force to set the screen size
@@ -242,10 +259,13 @@ func (u *UserInterface) scaleImpl() float64 {
 func (u *UserInterface) update(context driver.UIContext) error {
 render:
 	for {
+		t := time.NewTimer(500 * time.Millisecond)
+		defer t.Stop()
+
 		select {
 		case <-renderCh:
 			break render
-		case <-time.After(500 * time.Millisecond):
+		case <-t.C:
 			context.SuspendAudio()
 			continue
 		}
@@ -253,7 +273,7 @@ render:
 	context.ResumeAudio()
 
 	defer func() {
-		renderChEnd <- struct{}{}
+		renderEndCh <- struct{}{}
 	}()
 
 	if err := context.Update(func() {

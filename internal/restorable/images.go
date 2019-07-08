@@ -20,22 +20,20 @@ import (
 	"github.com/hajimehoshi/ebiten/internal/graphicscommand"
 )
 
-// restoringEnabled indicates if restoring happens or not.
-//
-// This value is overridden at enabled_*.go.
-var restoringEnabled = true
+// forceRestoring reports whether restoring forcely happens or not.
+var forceRestoring = false
 
-// IsRestoringEnabled returns a boolean value indicating whether
-// restoring process works or not.
-func IsRestoringEnabled() bool {
-	// This value is updated only at init or EnableRestoringForTesting.
-	// No need to lock here.
-	return restoringEnabled
+// needsRestoring reports whether restoring process works or not.
+func needsRestoring() bool {
+	if forceRestoring {
+		return true
+	}
+	return graphicscommand.NeedsRestoring()
 }
 
 // EnableRestoringForTesting forces to enable restoring for testing.
 func EnableRestoringForTesting() {
-	restoringEnabled = true
+	forceRestoring = true
 }
 
 // images is a set of Image objects.
@@ -55,16 +53,37 @@ var theImages = &images{
 // ResolveStaleImages is intended to be called at the end of a frame.
 func ResolveStaleImages() {
 	graphicscommand.FlushCommands()
-	if !restoringEnabled {
+	if !needsRestoring() {
 		return
 	}
 	theImages.resolveStaleImages()
 }
 
-// Restore restores the images.
+// RestoreIfNeeded restores the images.
 //
 // Restoring means to make all *graphicscommand.Image objects have their textures and framebuffers.
-func Restore() error {
+func RestoreIfNeeded() error {
+	if !needsRestoring() {
+		return nil
+	}
+
+	if !forceRestoring {
+		r := false
+		// As isInvalidated() is expensive, call this only for one image.
+		// This assumes that if there is one image that is invalidated, all images are invalidated.
+		for img := range theImages.images {
+			// The screen image might not have a texture. Skip this.
+			if img.screen {
+				continue
+			}
+			r = img.isInvalidated()
+			break
+		}
+		if !r {
+			return nil
+		}
+	}
+
 	if err := graphicscommand.ResetGraphicsDriverState(); err != nil {
 		return err
 	}
@@ -146,7 +165,7 @@ func (i *images) makeStaleIfDependingOnImpl(target *Image) {
 //
 // Restoring means to make all *graphicscommand.Image objects have their textures and framebuffers.
 func (i *images) restore() error {
-	if !IsRestoringEnabled() {
+	if !needsRestoring() {
 		panic("restorable: restore cannot be called when restoring is disabled")
 	}
 

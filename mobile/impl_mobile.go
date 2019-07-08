@@ -35,7 +35,15 @@ func update() error {
 	if !running {
 		return errors.New("mobile: start must be called ahead of update")
 	}
-	return mobile.Get().Render(chError)
+
+	select {
+	case err := <-chError:
+		return err
+	default:
+	}
+
+	mobile.Get().Render()
+	return nil
 }
 
 func start(f func(*ebiten.Image) error, width, height int, scale float64, title string) {

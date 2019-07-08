@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/hajimehoshi/ebiten"
+	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
 	. "github.com/hajimehoshi/ebiten/internal/shareable"
 	"github.com/hajimehoshi/ebiten/internal/testflock"
@@ -84,9 +85,10 @@ func TestEnsureNotShared(t *testing.T) {
 		dy1 = size * 3 / 4
 	)
 	// img4.ensureNotShared() should be called.
-	vs := img3.QuadVertices(0, 0, size/2, size/2, 1, 0, 0, 1, size/4, size/4, 1, 1, 1, 1)
+	vs := make([]float32, 4*graphics.VertexFloatNum)
+	graphics.PutQuadVertices(vs, img3, 0, 0, size/2, size/2, 1, 0, 0, 1, size/4, size/4, 1, 1, 1, 1)
 	is := graphics.QuadIndices()
-	img4.DrawTriangles(img3, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterNearest, graphics.AddressClampToZero)
+	img4.DrawTriangles(img3, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 	want := false
 	if got := img4.IsSharedForTesting(); got != want {
 		t.Errorf("got: %v, want: %v", got, want)
@@ -109,7 +111,7 @@ func TestEnsureNotShared(t *testing.T) {
 
 	// Check further drawing doesn't cause panic.
 	// This bug was fixed by 03dcd948.
-	img4.DrawTriangles(img3, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterNearest, graphics.AddressClampToZero)
+	img4.DrawTriangles(img3, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 }
 
 func TestReshared(t *testing.T) {
@@ -148,9 +150,10 @@ func TestReshared(t *testing.T) {
 	}
 
 	// Use img1 as a render target.
-	vs := img2.QuadVertices(0, 0, size, size, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1)
+	vs := make([]float32, 4*graphics.VertexFloatNum)
+	graphics.PutQuadVertices(vs, img2, 0, 0, size, size, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1)
 	is := graphics.QuadIndices()
-	img1.DrawTriangles(img2, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterNearest, graphics.AddressClampToZero)
+	img1.DrawTriangles(img2, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 	if got, want := img1.IsSharedForTesting(), false; got != want {
 		t.Errorf("got: %v, want: %v", got, want)
 	}
@@ -158,7 +161,7 @@ func TestReshared(t *testing.T) {
 	// Use img1 as a render source.
 	for i := 0; i < MaxCountForShare; i++ {
 		MakeImagesSharedForTesting()
-		img0.DrawTriangles(img1, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterNearest, graphics.AddressClampToZero)
+		img0.DrawTriangles(img1, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 		if got, want := img1.IsSharedForTesting(), false; got != want {
 			t.Errorf("got: %v, want: %v", got, want)
 		}
@@ -176,7 +179,7 @@ func TestReshared(t *testing.T) {
 		}
 	}
 
-	img0.DrawTriangles(img1, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterNearest, graphics.AddressClampToZero)
+	img0.DrawTriangles(img1, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 	if got, want := img1.IsSharedForTesting(), true; got != want {
 		t.Errorf("got: %v, want: %v", got, want)
 	}
@@ -195,7 +198,7 @@ func TestReshared(t *testing.T) {
 	// Use img3 as a render source. img3 never uses a shared texture.
 	for i := 0; i < MaxCountForShare*2; i++ {
 		MakeImagesSharedForTesting()
-		img0.DrawTriangles(img3, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterNearest, graphics.AddressClampToZero)
+		img0.DrawTriangles(img3, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 		if got, want := img3.IsSharedForTesting(), false; got != want {
 			t.Errorf("got: %v, want: %v", got, want)
 		}
@@ -274,9 +277,10 @@ func TestReplacePixelsAfterDrawTriangles(t *testing.T) {
 	}
 	src.ReplacePixels(pix)
 
-	vs := src.QuadVertices(0, 0, w, h, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1)
+	vs := make([]float32, 4*graphics.VertexFloatNum)
+	graphics.PutQuadVertices(vs, src, 0, 0, w, h, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1)
 	is := graphics.QuadIndices()
-	dst.DrawTriangles(src, vs, is, nil, graphics.CompositeModeCopy, graphics.FilterNearest, graphics.AddressClampToZero)
+	dst.DrawTriangles(src, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 	dst.ReplacePixels(pix)
 
 	for j := 0; j < h; j++ {
@@ -287,6 +291,77 @@ func TestReplacePixelsAfterDrawTriangles(t *testing.T) {
 			want := color.RGBA{c, c, c, c}
 			if got != want {
 				t.Errorf("dst.At(%d, %d): got %v, want: %v", i, j, got, want)
+			}
+		}
+	}
+}
+
+// Issue #887
+func TestSmallImages(t *testing.T) {
+	const w, h = 4, 8
+	src := NewImage(w, h)
+	defer src.Dispose()
+	dst := NewImage(w, h)
+	defer dst.Dispose()
+
+	pix := make([]byte, 4*w*h)
+	for i := 0; i < w*h; i++ {
+		pix[4*i] = 0xff
+		pix[4*i+1] = 0xff
+		pix[4*i+2] = 0xff
+		pix[4*i+3] = 0xff
+	}
+	src.ReplacePixels(pix)
+
+	vs := make([]float32, 4*graphics.VertexFloatNum)
+	graphics.PutQuadVertices(vs, src, 0, 0, w, h, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1)
+	is := graphics.QuadIndices()
+	dst.DrawTriangles(src, vs, is, nil, driver.CompositeModeSourceOver, driver.FilterNearest, driver.AddressClampToZero)
+
+	for j := 0; j < h; j++ {
+		for i := 0; i < w; i++ {
+			r, _, _, a := dst.At(i, j)
+			if got, want := r, byte(0xff); got != want {
+				t.Errorf("At(%d, %d) red: got: %d, want: %d", i, j, got, want)
+			}
+			if got, want := a, byte(0xff); got != want {
+				t.Errorf("At(%d, %d) alpha: got: %d, want: %d", i, j, got, want)
+			}
+		}
+	}
+}
+
+// Issue #887
+func TestLongImages(t *testing.T) {
+	const w, h = 1, 6
+	src := NewImage(w, h)
+	defer src.Dispose()
+	dst := NewImage(256, 256)
+	defer dst.Dispose()
+
+	pix := make([]byte, 4*w*h)
+	for i := 0; i < w*h; i++ {
+		pix[4*i] = 0xff
+		pix[4*i+1] = 0xff
+		pix[4*i+2] = 0xff
+		pix[4*i+3] = 0xff
+	}
+	src.ReplacePixels(pix)
+
+	const scale = 120
+	vs := make([]float32, 4*graphics.VertexFloatNum)
+	graphics.PutQuadVertices(vs, src, 0, 0, w, h, scale, 0, 0, 1, 0, 0, 1, 1, 1, 1)
+	is := graphics.QuadIndices()
+	dst.DrawTriangles(src, vs, is, nil, driver.CompositeModeSourceOver, driver.FilterNearest, driver.AddressClampToZero)
+
+	for j := 0; j < h; j++ {
+		for i := 0; i < w*scale; i++ {
+			r, _, _, a := dst.At(i, j)
+			if got, want := r, byte(0xff); got != want {
+				t.Errorf("At(%d, %d) red: got: %d, want: %d", i, j, got, want)
+			}
+			if got, want := a, byte(0xff); got != want {
+				t.Errorf("At(%d, %d) alpha: got: %d, want: %d", i, j, got, want)
 			}
 		}
 	}

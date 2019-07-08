@@ -26,6 +26,7 @@ import (
 )
 
 func init() {
+	shareable.SetGraphicsDriver(graphicsDriver())
 	graphicscommand.SetGraphicsDriver(graphicsDriver())
 }
 
@@ -146,22 +147,8 @@ func (c *uiContext) Update(afterFrameUpdate func()) error {
 	return nil
 }
 
-func (c *uiContext) needsRestoring() (bool, error) {
-	return c.offscreen.mipmap.original().IsInvalidated()
-}
-
 func (c *uiContext) restoreIfNeeded() error {
-	if !shareable.IsRestoringEnabled() {
-		return nil
-	}
-	r, err := c.needsRestoring()
-	if err != nil {
-		return err
-	}
-	if !r {
-		return nil
-	}
-	if err := shareable.Restore(); err != nil {
+	if err := shareable.RestoreIfNeeded(); err != nil {
 		return err
 	}
 	return nil

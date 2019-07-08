@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"syscall/js"
 
-	"github.com/hajimehoshi/ebiten/internal/graphics"
+	"github.com/hajimehoshi/ebiten/internal/driver"
+	"github.com/hajimehoshi/ebiten/internal/jsutil"
+	"github.com/hajimehoshi/ebiten/internal/web"
 )
 
 type (
@@ -71,6 +73,7 @@ var (
 	framebuffer_        = contextPrototype.Get("FRAMEBUFFER")
 	framebufferBinding  = contextPrototype.Get("FRAMEBUFFER_BINDING")
 	framebufferComplete = contextPrototype.Get("FRAMEBUFFER_COMPLETE")
+	highFloat           = contextPrototype.Get("HIGH_FLOAT")
 	linkStatus          = contextPrototype.Get("LINK_STATUS")
 	maxTextureSize      = contextPrototype.Get("MAX_TEXTURE_SIZE")
 	nearest             = contextPrototype.Get("NEAREST")
@@ -122,7 +125,7 @@ func (c *context) reset() error {
 	c.lastFramebuffer = framebufferNative(js.Null())
 	c.lastViewportWidth = 0
 	c.lastViewportHeight = 0
-	c.lastCompositeMode = graphics.CompositeModeUnknown
+	c.lastCompositeMode = driver.CompositeModeUnknown
 
 	c.gl = js.Value{}
 	c.ensureGL()
@@ -131,13 +134,13 @@ func (c *context) reset() error {
 	}
 	gl := c.gl
 	gl.Call("enable", blend)
-	c.blendFunc(graphics.CompositeModeSourceOver)
+	c.blendFunc(driver.CompositeModeSourceOver)
 	f := gl.Call("getParameter", framebufferBinding)
 	c.screenFramebuffer = framebufferNative(f)
 	return nil
 }
 
-func (c *context) blendFunc(mode graphics.CompositeMode) {
+func (c *context) blendFunc(mode driver.CompositeMode) {
 	if c.lastCompositeMode == mode {
 		return
 	}
@@ -188,11 +191,10 @@ func (c *context) framebufferPixels(f *framebuffer, width, height int) ([]byte, 
 
 	c.bindFramebuffer(f.native)
 
-	pixels := make([]byte, 4*width*height)
-	p := js.TypedArrayOf(pixels)
+	p := js.Global().Get("Uint8Array").New(4 * width * height)
 	gl.Call("readPixels", 0, 0, width, height, rgba, unsignedByte, p)
-	p.Release()
-	return pixels, nil
+
+	return jsutil.Uint8ArrayToSlice(p), nil
 }
 
 func (c *context) bindTextureImpl(t textureNative) {
@@ -226,9 +228,9 @@ func (c *context) texSubImage2D(t textureNative, pixels []byte, x, y, width, hei
 	// void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
 	//                    GLsizei width, GLsizei height,
 	//                    GLenum format, GLenum type, ArrayBufferView? pixels);
-	p := js.TypedArrayOf(pixels)
+	p, free := jsutil.SliceToTypedArray(pixels)
 	gl.Call("texSubImage2D", texture2d, 0, x, y, width, height, rgba, unsignedByte, p)
-	p.Release()
+	free()
 }
 
 func (c *context) newFramebuffer(t textureNative) (framebufferNative, error) {
@@ -356,10 +358,6 @@ func (c *context) uniformFloat(p program, location string, v float32) {
 	gl.Call("uniform1f", js.Value(l), v)
 }
 
-var (
-	float32Array = js.Global().Get("Float32Array")
-)
-
 func (c *context) uniformFloats(p program, location string, v []float32) {
 	c.ensureGL()
 	gl := c.gl
@@ -370,9 +368,9 @@ func (c *context) uniformFloats(p program, location string, v []float32) {
 	case 4:
 		gl.Call("uniform4f", js.Value(l), v[0], v[1], v[2], v[3])
 	case 16:
-		arr := js.TypedArrayOf(v)
+		arr, free := jsutil.SliceToTypedArray(v)
 		gl.Call("uniformMatrix4fv", js.Value(l), false, arr)
-		arr.Release()
+		free()
 	default:
 		panic(fmt.Sprintf("opengl: invalid uniform floats num: %d", len(v)))
 	}
@@ -423,17 +421,17 @@ func (c *context) bindBuffer(bufferType bufferType, b buffer) {
 func (c *context) arrayBufferSubData(data []float32) {
 	c.ensureGL()
 	gl := c.gl
-	arr := js.TypedArrayOf(data)
+	arr, free := jsutil.SliceToTypedArray(data)
 	gl.Call("bufferSubData", int(arrayBuffer), 0, arr)
-	arr.Release()
+	free()
 }
 
 func (c *context) elementArrayBufferSubData(data []uint16) {
 	c.ensureGL()
 	gl := c.gl
-	arr := js.TypedArrayOf(data)
+	arr, free := jsutil.SliceToTypedArray(data)
 	gl.Call("bufferSubData", int(elementArrayBuffer), 0, arr)
-	arr.Release()
+	free()
 }
 
 func (c *context) deleteBuffer(b buffer) {
@@ -454,8 +452,18 @@ func (c *context) maxTextureSizeImpl() int {
 	return gl.Call("getParameter", maxTextureSize).Int()
 }
 
+func (c *context) getShaderPrecisionFormatPrecision() int {
+	c.ensureGL()
+	gl := c.gl
+	return gl.Call("getShaderPrecisionFormat", js.ValueOf(int(fragmentShader)), highFloat).Get("precision").Int()
+}
+
 func (c *context) flush() {
 	c.ensureGL()
 	gl := c.gl
 	gl.Call("flush")
+}
+
+func (c *context) needsRestoring() bool {
+	return !web.IsMobileBrowser()
 }

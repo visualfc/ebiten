@@ -20,6 +20,7 @@ import (
 	"image/color"
 
 	"github.com/hajimehoshi/ebiten/internal/affine"
+	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
 	"github.com/hajimehoshi/ebiten/internal/graphicscommand"
 )
@@ -84,9 +85,9 @@ type drawTrianglesHistoryItem struct {
 	vertices []float32
 	indices  []uint16
 	colorm   *affine.ColorM
-	mode     graphics.CompositeMode
-	filter   graphics.Filter
-	address  graphics.Address
+	mode     driver.CompositeMode
+	filter   driver.Filter
+	address  driver.Address
 }
 
 // Image represents an image that can be restored when GL context is lost.
@@ -107,9 +108,6 @@ type Image struct {
 
 	// screen indicates whether the image is used as an actual screen.
 	screen bool
-
-	w2 int
-	h2 int
 
 	// priority indicates whether the image is restored in high priority when context-lost happens.
 	priority bool
@@ -140,7 +138,7 @@ func NewImage(width, height int) *Image {
 	i := &Image{
 		image: graphicscommand.NewImage(width, height),
 	}
-	i.clear()
+	i.clearForInitialization()
 	theImages.add(i)
 	return i
 }
@@ -159,7 +157,7 @@ func NewScreenFramebufferImage(width, height int) *Image {
 		image:  graphicscommand.NewScreenFramebufferImage(width, height),
 		screen: true,
 	}
-	i.clear()
+	i.clearForInitialization()
 	theImages.add(i)
 	return i
 }
@@ -169,7 +167,9 @@ func (i *Image) Fill(r, g, b, a uint8) {
 	i.fill(r, g, b, a)
 }
 
-func (i *Image) clear() {
+// clearForInitialization clears the underlying image for initialization.
+func (i *Image) clearForInitialization() {
+	// As this is for initialization, drawing history doesn't have to be adjusted.
 	i.fill(0, 0, 0, 0)
 }
 
@@ -191,17 +191,21 @@ func (i *Image) fill(r, g, b, a uint8) {
 
 	// There are not 'drawTrianglesHistoryItem's for this image and emptyImage.
 	// As emptyImage is a priority image, this is restored before other regular images are restored.
+
+	// The rendering target size needs to be its 'internal' size instead of the exposed size to avoid glitches on
+	// mobile platforms (See the change 1e1f309a).
 	dw, dh := i.internalSize()
 	sw, sh := emptyImage.Size()
-	vs := graphics.QuadVertices(dw, dh, 0, 0, sw, sh,
+	vs := make([]float32, 4*graphics.VertexFloatNum)
+	graphics.PutQuadVertices(vs, i, 0, 0, sw, sh,
 		float32(dw)/float32(sw), 0, 0, float32(dh)/float32(sh), 0, 0,
 		rf, gf, bf, af)
 	is := graphics.QuadIndices()
-	c := graphics.CompositeModeCopy
+	c := driver.CompositeModeCopy
 	if a == 0 {
-		c = graphics.CompositeModeClear
+		c = driver.CompositeModeClear
 	}
-	i.image.DrawTriangles(emptyImage.image, vs, is, nil, c, graphics.FilterNearest, graphics.AddressClampToZero)
+	i.image.DrawTriangles(emptyImage.image, vs, is, nil, c, driver.FilterNearest, driver.AddressClampToZero)
 
 	w, h := i.Size()
 	i.basePixels = &Pixels{
@@ -228,20 +232,17 @@ func (i *Image) Size() (int, int) {
 
 // internalSize returns the size of the internal texture.
 func (i *Image) internalSize() (int, int) {
-	if i.w2 == 0 || i.h2 == 0 {
-		w, h := i.image.Size()
-		i.w2 = graphics.InternalImageSize(w)
-		i.h2 = graphics.InternalImageSize(h)
-	}
-	return i.w2, i.h2
-}
-
-func (i *Image) QuadVertices(sx0, sy0, sx1, sy1 int, a, b, c, d, tx, ty float32, cr, cg, cb, ca float32) []float32 {
-	w, h := i.internalSize()
-	return graphics.QuadVertices(w, h, sx0, sy0, sx1, sy1, a, b, c, d, tx, ty, cr, cg, cb, ca)
+	return i.image.InternalSize()
 }
 
 func (i *Image) PutVertex(vs []float32, dx, dy, sx, sy float32, bx0, by0, bx1, by1 float32, cr, cg, cb, ca float32) {
+	// Specifying a range explicitly here is redundant but this helps optimization
+	// to eliminate boundary checks.
+	//
+	// VertexFloatNum is better than 12 in terms of code maintenanceability, but in GopherJS, optimization
+	// might not work.
+	vs = vs[0:12]
+
 	w, h := i.internalSize()
 	vs[0] = dx
 	vs[1] = dy
@@ -249,8 +250,8 @@ func (i *Image) PutVertex(vs []float32, dx, dy, sx, sy float32, bx0, by0, bx1, b
 	vs[3] = sy / float32(h)
 	vs[4] = bx0 / float32(w)
 	vs[5] = by0 / float32(h)
-	vs[6] = bx1/float32(w) - 1.0/float32(w)/graphics.TexelAdjustmentFactor
-	vs[7] = by1/float32(h) - 1.0/float32(h)/graphics.TexelAdjustmentFactor
+	vs[6] = bx1 / float32(w)
+	vs[7] = by1 / float32(h)
 	vs[8] = cr
 	vs[9] = cg
 	vs[10] = cb
@@ -301,7 +302,7 @@ func (i *Image) ReplacePixels(pixels []byte, x, y, width, height int) {
 	}
 	i.image.ReplacePixels(pixels, x, y, width, height)
 
-	if !IsRestoringEnabled() {
+	if !needsRestoring() {
 		i.makeStale()
 		return
 	}
@@ -353,7 +354,7 @@ func (i *Image) ReplacePixels(pixels []byte, x, y, width, height int) {
 }
 
 // DrawTriangles draws a given image img to the image.
-func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) {
+func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	if i.priority {
 		panic("restorable: DrawTriangles cannot be called on a priority image")
 	}
@@ -362,7 +363,7 @@ func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, 
 	}
 	theImages.makeStaleIfDependingOn(i)
 
-	if img.stale || img.volatile || i.screen || !IsRestoringEnabled() || i.volatile {
+	if img.stale || img.volatile || i.screen || !needsRestoring() || i.volatile {
 		i.makeStale()
 	} else {
 		i.appendDrawTrianglesHistory(img, vertices, indices, colorm, mode, filter, address)
@@ -371,7 +372,7 @@ func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, 
 }
 
 // appendDrawTrianglesHistory appends a draw-image history item to the image.
-func (i *Image) appendDrawTrianglesHistory(image *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode graphics.CompositeMode, filter graphics.Filter, address graphics.Address) {
+func (i *Image) appendDrawTrianglesHistory(image *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	if i.stale || i.volatile || i.screen {
 		return
 	}
@@ -447,7 +448,7 @@ func (i *Image) readPixelsFromGPU() {
 
 // resolveStale resolves the image's 'stale' state.
 func (i *Image) resolveStale() {
-	if !IsRestoringEnabled() {
+	if !needsRestoring() {
 		return
 	}
 
@@ -504,7 +505,7 @@ func (i *Image) restore() error {
 	}
 	if i.volatile {
 		i.image = graphicscommand.NewImage(w, h)
-		i.clear()
+		i.clearForInitialization()
 		return nil
 	}
 	if i.stale {
@@ -551,15 +552,11 @@ func (i *Image) Dispose() {
 	i.stale = false
 }
 
-// IsInvalidated returns a boolean value indicating whether the image is invalidated.
+// isInvalidated returns a boolean value indicating whether the image is invalidated.
 //
 // If an image is invalidated, GL context is lost and all the images should be restored asap.
-func (i *Image) IsInvalidated() (bool, error) {
+func (i *Image) isInvalidated() bool {
 	// FlushCommands is required because c.offscreen.impl might not have an actual texture.
 	graphicscommand.FlushCommands()
-	if !IsRestoringEnabled() {
-		return false, nil
-	}
-
-	return i.image.IsInvalidated(), nil
+	return i.image.IsInvalidated()
 }
