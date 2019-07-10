@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"syscall/js"
 
-	"github.com/hajimehoshi/ebiten/internal/graphics"
+	"github.com/hajimehoshi/ebiten/internal/driver"
 )
 
 type (
@@ -72,6 +72,7 @@ var (
 	framebuffer_        = contextPrototype.Get("FRAMEBUFFER")
 	framebufferBinding  = contextPrototype.Get("FRAMEBUFFER_BINDING")
 	framebufferComplete = contextPrototype.Get("FRAMEBUFFER_COMPLETE")
+	highFloat           = contextPrototype.Get("HIGH_FLOAT")
 	linkStatus          = contextPrototype.Get("LINK_STATUS")
 	maxTextureSize      = contextPrototype.Get("MAX_TEXTURE_SIZE")
 	nearest             = contextPrototype.Get("NEAREST")
@@ -119,7 +120,7 @@ func (c *context) reset() error {
 	c.lastFramebuffer = framebufferNative(js.Null())
 	c.lastViewportWidth = 0
 	c.lastViewportHeight = 0
-	c.lastCompositeMode = graphics.CompositeModeUnknown
+	c.lastCompositeMode = driver.CompositeModeUnknown
 
 	c.gl = js.Value{}
 	c.ensureGL()
@@ -128,13 +129,13 @@ func (c *context) reset() error {
 	}
 	gl := c.gl
 	gl.Call("enable", blend)
-	c.blendFunc(graphics.CompositeModeSourceOver)
+	c.blendFunc(driver.CompositeModeSourceOver)
 	f := gl.Call("getParameter", framebufferBinding)
 	c.screenFramebuffer = framebufferNative(f)
 	return nil
 }
 
-func (c *context) blendFunc(mode graphics.CompositeMode) {
+func (c *context) blendFunc(mode driver.CompositeMode) {
 	if c.lastCompositeMode == mode {
 		return
 	}
@@ -451,8 +452,18 @@ func (c *context) maxTextureSizeImpl() int {
 	return gl.Call("getParameter", maxTextureSize).Int()
 }
 
+func (c *context) getShaderPrecisionFormatPrecision() int {
+	c.ensureGL()
+	gl := c.gl
+	return gl.Call("getShaderPrecisionFormat", js.ValueOf(int(fragmentShader)), highFloat).Get("precision").Int()
+}
+
 func (c *context) flush() {
 	c.ensureGL()
 	gl := c.gl
 	gl.Call("flush")
+}
+
+func (c *context) needsRestoring() bool {
+	return false
 }
