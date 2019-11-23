@@ -1,15 +1,10 @@
-language: go
-
-go:
-  - "1.12"
-
 addons:
   apt:
     sources:
       - ubuntu-toolchain-r-test
     packages:
       - libasound2-dev
-      - libgles2-mesa-dev
+      - libgl1-mesa-dev
       - libalut-dev
       - libxcursor-dev
       - libxi-dev
@@ -18,17 +13,43 @@ addons:
       - libxxf86vm-dev
   chrome: stable
 
+services:
+  - xvfb
+
 install:
+  # Install Go 1.13.3 manualy
+  # See https://travis-ci.community/t/goos-js-goarch-wasm-go-run-fails-panic-newosproc-not-implemented/1651
+  - wget -O go.tar.gz https://dl.google.com/go/go1.13.3.linux-amd64.tar.gz
+  - tar -C ~ -xzf go.tar.gz
+  - rm go.tar.gz
+  - export GOROOT=~/go
+  - export GOPATH=/home/travis/gopath
+  - export PATH=$GOROOT/bin:$PATH
+  - go version
+  - go env
+
+  # Install Go 1.12.12
+  - go get golang.org/dl/go1.12.12
+  - go1.12.12 download
+
+  # Make the working directory
   - mkdir /tmp/work
   - cd /tmp/work
   - go mod init example.com/m
   - go get github.com/hajimehoshi/ebiten@$TRAVIS_BRANCH
-  - go get github.com/gopherjs/gopherjs
-  - go get myitcv.io/cmd/gjbt
-  - # gopath-get for the current GopherJS and gjbt.
+
+  # wasmbrowsertest
+  - GO111MODULE=off go get github.com/agnivade/wasmbrowsertest
+  - mv $GOPATH/bin/wasmbrowsertest $GOPATH/bin/go_js_wasm_exec
+
+  # GopherJS
   - GO111MODULE=off go get -tags example github.com/hajimehoshi/ebiten/... 
-  - GO111MODULE=off go get github.com/gopherjs/gopherjs
-  - GO111MODULE=off go get github.com/gopherjs/gopherwasm/js
+  - GO111MODULE=off go1.12.12 get github.com/gopherjs/gopherjs
+
+  # gjbt
+  - GO111MODULE=off go1.12.12 get myitcv.io/cmd/gjbt
+
+  # Chrome
   - mkdir /tmp/google-chrome-bin
   - ln -s /usr/bin/google-chrome-stable /tmp/google-chrome-bin/google-chrome
   - export PATH=/tmp/google-chrome-bin:$PATH
@@ -38,18 +59,25 @@ install:
 
 before_script:
   - export DISPLAY=:99.0
-  - sh -e /etc/init.d/xvfb start
-  - sleep 3
 
 script:
   - cd /tmp/work
-  - go build -tags example -v github.com/hajimehoshi/ebiten/examples/...
+
+  # go vet
+  - go vet -tags example -v github.com/hajimehoshi/ebiten/...
+
+  # go build
+  - go build -tags example -v github.com/hajimehoshi/ebiten/...
+  - GOOS=windows GOARCH=amd64 go build -tags example -v github.com/hajimehoshi/ebiten/...
+  - GOOS=windows GOARCH=386 go build -tags example -v github.com/hajimehoshi/ebiten/...
+
+  # go test
   - go test -v github.com/hajimehoshi/ebiten/...
-  - gopherjs build --tags example -v github.com/hajimehoshi/ebiten/examples/blocks
-  - gjbt github.com/hajimehoshi/ebiten # TODO: Test the subdirectories
-  - GOOS=windows GOARCH=amd64 go build -tags example -v github.com/hajimehoshi/ebiten/examples/...
-  - GOOS=windows GOARCH=386 go build -tags example -v github.com/hajimehoshi/ebiten/examples/...
-  - CGO_ENABLED=0 go vet github.com/hajimehoshi/ebiten # This is necessary for the Go playground
+  - GOOS=js GOARCH=wasm go test -v github.com/hajimehoshi/ebiten/...
+
+  # GopherJS
+  - GO111MODULE=off go1.12.12 run github.com/gopherjs/gopherjs build --tags example -v github.com/hajimehoshi/ebiten/examples/blocks
+  - GO111MODULE=off go1.12.12 run myitcv.io/cmd/gjbt github.com/hajimehoshi/ebiten # TODO: Test the subdirectories
 
 # - test -z $(gofmt -s -l $GOPATH/src/github.com/hajimehoshi/ebiten)
 

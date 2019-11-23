@@ -20,13 +20,9 @@ package ebiten
 
 import (
 	"fmt"
-	"image"
-	"io/ioutil"
 	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/hajimehoshi/ebiten/internal/png"
 	"github.com/hajimehoshi/ebiten/internal/shareable"
 )
 
@@ -51,30 +47,12 @@ func availableFilename(prefix, postfix string) (string, error) {
 }
 
 func takeScreenshot(screen *Image) error {
-	dump := func() (string, error) {
-		f, err := ioutil.TempFile("", "")
-		if err != nil {
-			return "", err
-		}
-		defer f.Close()
-
-		if err := png.Encode(f, screen); err != nil {
-			return "", err
-		}
-		return f.Name(), nil
-	}
-
-	name, err := dump()
-	if err != nil {
-		return err
-	}
-
 	newname, err := availableFilename("screenshot_", ".png")
 	if err != nil {
 		return err
 	}
 
-	if err := os.Rename(name, newname); err != nil {
+	if err := screen.mipmap.dump(newname); err != nil {
 		return err
 	}
 
@@ -94,24 +72,8 @@ func dumpInternalImages() error {
 		return err
 	}
 
-	dump := func(img image.Image, index int) error {
-		filename := filepath.Join(dir, fmt.Sprintf("%d.png", index))
-		f, err := os.Create(filename)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		if err := png.Encode(f, img); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	for i, img := range shareable.Images() {
-		if err := dump(img, i); err != nil {
-			return err
-		}
+	if err := shareable.DumpImages(dir); err != nil {
+		return err
 	}
 
 	if _, err := fmt.Fprintf(os.Stderr, "Dumped the internal images at: %s\n", dir); err != nil {

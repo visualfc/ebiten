@@ -12,18 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build darwin freebsd linux,cgo windows
-// +build !android
-// +build !ios
-// +build !js
+package shareable
 
-package ebiten
+func MakeImagesSharedForTesting() {
+	makeImagesShared()
+}
 
-import (
-	"github.com/hajimehoshi/ebiten/internal/driver"
-	"github.com/hajimehoshi/ebiten/internal/uidriver/glfw"
-)
+func (i *Image) IsSharedForTesting() bool {
+	backendsM.Lock()
+	defer backendsM.Unlock()
+	return i.isShared()
+}
 
-func uiDriver() driver.UI {
-	return glfw.Get()
+func (i *Image) EnsureNotSharedForTesting() {
+	backendsM.Lock()
+	defer backendsM.Unlock()
+	i.ensureNotShared()
 }

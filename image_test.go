@@ -940,36 +940,53 @@ func TestImageCopy(t *testing.T) {
 	img1.Fill(color.Transparent)
 }
 
+// Issue #611, #907
 func TestImageStretch(t *testing.T) {
-	img0, _ := NewImage(16, 17, FilterDefault)
+	const w = 16
 
-	pix := make([]byte, 4*16*17)
-	for i := 0; i < 16*16; i++ {
-		pix[4*i] = 0xff
-		pix[4*i+3] = 0xff
-	}
-	for i := 0; i < 16; i++ {
-		pix[4*(16*16+i)+1] = 0xff
-		pix[4*(16*16+i)+3] = 0xff
-	}
-	img0.ReplacePixels(pix)
+	dst, _ := NewImage(w, 4096, FilterDefault)
+loop:
+	for h := 1; h <= 32; h++ {
+		src, _ := NewImage(w, h+1, FilterDefault)
 
-	// TODO: 4096 doesn't pass on MacBook Pro (#611).
-	const h = 4000
-	img1, _ := NewImage(16, h, FilterDefault)
-	for i := 1; i < h; i++ {
-		img1.Clear()
-		op := &DrawImageOptions{}
-		op.GeoM.Scale(1, float64(i)/16)
-		img1.DrawImage(img0.SubImage(image.Rect(0, 0, 16, 16)).(*Image), op)
-		for j := -1; j <= 1; j++ {
-			got := img1.At(0, i+j).(color.RGBA)
-			want := color.RGBA{}
-			if j < 0 {
-				want = color.RGBA{0xff, 0, 0, 0xff}
+		pix := make([]byte, 4*w*(h+1))
+		for i := 0; i < w*h; i++ {
+			pix[4*i] = 0xff
+			pix[4*i+3] = 0xff
+		}
+		for i := 0; i < w; i++ {
+			pix[4*(w*h+i)+1] = 0xff
+			pix[4*(w*h+i)+3] = 0xff
+		}
+		src.ReplacePixels(pix)
+
+		_, dh := dst.Size()
+		for i := 0; i < dh; {
+			dst.Clear()
+			op := &DrawImageOptions{}
+			op.GeoM.Scale(1, float64(i)/float64(h))
+			dst.DrawImage(src.SubImage(image.Rect(0, 0, w, h)).(*Image), op)
+			for j := -1; j <= 1; j++ {
+				if i+j < 0 {
+					continue
+				}
+				got := dst.At(0, i+j).(color.RGBA)
+				want := color.RGBA{}
+				if j < 0 {
+					want = color.RGBA{0xff, 0, 0, 0xff}
+				}
+				if got != want {
+					t.Errorf("At(%d, %d) (height=%d, scale=%d/%d): got: %#v, want: %#v", 0, i+j, h, i, h, got, want)
+					continue loop
+				}
 			}
-			if got != want {
-				t.Fatalf("At(%d, %d) (i=%d): got: %#v, want: %#v", 0, i+j, i, got, want)
+			switch i % 32 {
+			case 31, 0:
+				i++
+			case 1:
+				i += 32 - 2
+			default:
+				panic("not reached")
 			}
 		}
 	}
@@ -1037,13 +1054,67 @@ func TestImageMipmap(t *testing.T) {
 	wantDst.DrawImage(l2, op)
 
 	for j := 0; j < h; j++ {
-		for i := 0; i < h; i++ {
+		for i := 0; i < w; i++ {
 			got := gotDst.At(i, j).(color.RGBA)
 			want := wantDst.At(i, j).(color.RGBA)
 			if !sameColors(got, want, 1) {
 				t.Errorf("At(%d, %d): got: %#v, want: %#v", i, j, got, want)
 			}
 		}
+	}
+}
+
+func TestImageMipmapNegativeDet(t *testing.T) {
+	src, _, err := openEbitenImage()
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	w, h := src.Size()
+
+	l1, _ := NewImage(w/2, h/2, FilterDefault)
+	op := &DrawImageOptions{}
+	op.GeoM.Scale(1/2.0, 1/2.0)
+	op.Filter = FilterLinear
+	l1.DrawImage(src, op)
+
+	l1w, l1h := l1.Size()
+	l2, _ := NewImage(l1w/2, l1h/2, FilterDefault)
+	op = &DrawImageOptions{}
+	op.GeoM.Scale(1/2.0, 1/2.0)
+	op.Filter = FilterLinear
+	l2.DrawImage(l1, op)
+
+	gotDst, _ := NewImage(w, h, FilterDefault)
+	op = &DrawImageOptions{}
+	op.GeoM.Scale(-1/5.0, -1/5.0)
+	op.GeoM.Translate(float64(w), float64(h))
+	op.Filter = FilterLinear
+	gotDst.DrawImage(src, op)
+
+	wantDst, _ := NewImage(w, h, FilterDefault)
+	op = &DrawImageOptions{}
+	op.GeoM.Scale(-4.0/5.0, -4.0/5.0)
+	op.GeoM.Translate(float64(w), float64(h))
+	op.Filter = FilterLinear
+	wantDst.DrawImage(l2, op)
+
+	allZero := true
+	for j := 0; j < h; j++ {
+		for i := 0; i < w; i++ {
+			got := gotDst.At(i, j).(color.RGBA)
+			want := wantDst.At(i, j).(color.RGBA)
+			if !sameColors(got, want, 1) {
+				t.Errorf("At(%d, %d): got: %#v, want: %#v", i, j, got, want)
+			}
+			if got.A > 0 {
+				allZero = false
+			}
+		}
+	}
+
+	if allZero {
+		t.Errorf("the image must include non-zero values but not")
 	}
 }
 
@@ -1238,23 +1309,25 @@ func TestImageLinearFilterGlitch(t *testing.T) {
 	}
 	src.ReplacePixels(pix)
 
-	op := &DrawImageOptions{}
-	op.GeoM.Scale(scale, 1)
-	op.Filter = FilterLinear
-	dst.DrawImage(src, op)
+	for _, f := range []Filter{FilterNearest, FilterLinear} {
+		op := &DrawImageOptions{}
+		op.GeoM.Scale(scale, 1)
+		op.Filter = f
+		dst.DrawImage(src, op)
 
-	for j := 1; j < h-1; j++ {
-		offset := int(math.Ceil(scale))
-		for i := offset; i < int(math.Floor(w*scale))-offset; i++ {
-			got := dst.At(i, j).(color.RGBA)
-			var want color.RGBA
-			if j < 3 {
-				want = color.RGBA{0xff, 0xff, 0xff, 0xff}
-			} else {
-				want = color.RGBA{0, 0, 0, 0xff}
-			}
-			if got != want {
-				t.Errorf("src.At(%d, %d): got: %v, want: %v", i, j, got, want)
+		for j := 1; j < h-1; j++ {
+			offset := int(math.Ceil(scale))
+			for i := offset; i < int(math.Floor(w*scale))-offset; i++ {
+				got := dst.At(i, j).(color.RGBA)
+				var want color.RGBA
+				if j < 3 {
+					want = color.RGBA{0xff, 0xff, 0xff, 0xff}
+				} else {
+					want = color.RGBA{0, 0, 0, 0xff}
+				}
+				if got != want {
+					t.Errorf("src.At(%d, %d): filter: %d, got: %v, want: %v", i, j, f, got, want)
+				}
 			}
 		}
 	}
@@ -1366,6 +1439,7 @@ func TestImageSet(t *testing.T) {
 		{1, 2}:   {3, 4, 5, 6},
 		{7, 8}:   {9, 10, 11, 12},
 		{13, 14}: {15, 16, 17, 18},
+		{-1, -1}: {19, 20, 21, 22},
 	}
 
 	for p, c := range colors {
@@ -1653,7 +1727,7 @@ func TestImageSubImageSubImage(t *testing.T) {
 	}
 }
 
-// Issue 839
+// Issue #839
 func TestImageTooSmallMipmap(t *testing.T) {
 	const w, h = 16, 16
 	src, _ := NewImage(w, h, FilterDefault)
@@ -1679,4 +1753,102 @@ func TestImageZeroSizedMipmap(t *testing.T) {
 	op := &DrawImageOptions{}
 	op.Filter = FilterLinear
 	dst.DrawImage(src.SubImage(image.ZR).(*Image), op)
+}
+
+// Issue #898
+func TestImageFillingAndEdges(t *testing.T) {
+	const (
+		srcw, srch = 16, 16
+		dstw, dsth = 256, 16
+	)
+
+	src, _ := NewImage(srcw, srch, FilterDefault)
+	dst, _ := NewImage(dstw, dsth, FilterDefault)
+
+	src.Fill(color.White)
+	dst.Fill(color.Black)
+
+	op := &DrawImageOptions{}
+	op.GeoM.Scale(float64(dstw-2)/float64(srcw), float64(dsth-2)/float64(srch))
+	op.GeoM.Translate(1, 1)
+	dst.DrawImage(src, op)
+
+	for j := 0; j < dsth; j++ {
+		for i := 0; i < dstw; i++ {
+			got := dst.At(i, j).(color.RGBA)
+			want := color.RGBA{0xff, 0xff, 0xff, 0xff}
+			if i == 0 || i == dstw-1 || j == 0 || j == dsth-1 {
+				want = color.RGBA{0, 0, 0, 0xff}
+			}
+			if got != want {
+				t.Errorf("dst.At(%d, %d): got: %v, want: %v", i, j, got, want)
+			}
+		}
+	}
+}
+
+func TestImageDrawTrianglesAndMutateArgs(t *testing.T) {
+	const w, h = 16, 16
+	dst, _ := NewImage(w, h, FilterDefault)
+	src, _ := NewImage(w, h, FilterDefault)
+	clr := color.RGBA{0xff, 0, 0, 0xff}
+	src.Fill(clr)
+
+	vs := []Vertex{
+		{
+			DstX:   0,
+			DstY:   0,
+			SrcX:   0,
+			SrcY:   0,
+			ColorR: 1,
+			ColorG: 1,
+			ColorB: 1,
+			ColorA: 1,
+		},
+		{
+			DstX:   w,
+			DstY:   0,
+			SrcX:   w,
+			SrcY:   0,
+			ColorR: 1,
+			ColorG: 1,
+			ColorB: 1,
+			ColorA: 1,
+		},
+		{
+			DstX:   0,
+			DstY:   h,
+			SrcX:   0,
+			SrcY:   h,
+			ColorR: 1,
+			ColorG: 1,
+			ColorB: 1,
+			ColorA: 1,
+		},
+		{
+			DstX:   w,
+			DstY:   h,
+			SrcX:   w,
+			SrcY:   h,
+			ColorR: 1,
+			ColorG: 1,
+			ColorB: 1,
+			ColorA: 1,
+		},
+	}
+	is := []uint16{0, 1, 2, 1, 2, 3}
+	dst.DrawTriangles(vs, is, src, nil)
+	vs[0].SrcX = w
+	vs[0].SrcY = h
+	is[5] = 0
+
+	for j := 0; j < w; j++ {
+		for i := 0; i < w; i++ {
+			got := dst.At(i, j)
+			want := clr
+			if got != want {
+				t.Errorf("dst.At(%d, %d): got %v, want %v", i, j, got, want)
+			}
+		}
+	}
 }

@@ -15,7 +15,7 @@
 package restorable
 
 import (
-	"image"
+	"path/filepath"
 
 	"github.com/hajimehoshi/ebiten/internal/graphicscommand"
 )
@@ -87,37 +87,20 @@ func RestoreIfNeeded() error {
 	if err := graphicscommand.ResetGraphicsDriverState(); err != nil {
 		return err
 	}
-	return theImages.restore()
+	theImages.restore()
+	return nil
 }
 
-func Images() []image.Image {
-	var imgs []image.Image
+// DumpImages dumps all the current images to the specified directory.
+//
+// This is for testing usage.
+func DumpImages(dir string) error {
 	for img := range theImages.images {
-		if img.volatile {
-			continue
+		if err := img.Dump(filepath.Join(dir, "*.png")); err != nil {
+			return err
 		}
-		if img.screen {
-			continue
-		}
-
-		w, h := img.Size()
-		pix := make([]byte, 4*w*h)
-		for j := 0; j < h; j++ {
-			for i := 0; i < w; i++ {
-				r, g, b, a := img.At(i, j)
-				pix[4*(i+j*w)] = r
-				pix[4*(i+j*w)+1] = g
-				pix[4*(i+j*w)+2] = b
-				pix[4*(i+j*w)+3] = a
-			}
-		}
-		imgs = append(imgs, &image.RGBA{
-			Pix:    pix,
-			Stride: 4 * w,
-			Rect:   image.Rect(0, 0, w, h),
-		})
 	}
-	return imgs
+	return nil
 }
 
 // add adds img to the images.
@@ -164,15 +147,16 @@ func (i *images) makeStaleIfDependingOnImpl(target *Image) {
 // restore restores the images.
 //
 // Restoring means to make all *graphicscommand.Image objects have their textures and framebuffers.
-func (i *images) restore() error {
+func (i *images) restore() {
 	if !needsRestoring() {
 		panic("restorable: restore cannot be called when restoring is disabled")
 	}
 
-	// Dispose image explicitly
-	for img := range i.images {
-		img.image.Dispose()
-		// img.image can't be set nil here, or Size() panics when restoring.
+	// Dispose all the images ahead of restoring. A current texture ID and a new texture ID can be duplicated.
+	// TODO: Write a test to confirm that ID duplication never happens.
+	for i := range i.images {
+		i.image.Dispose()
+		i.image = nil
 	}
 
 	// Let's do topological sort based on dependencies of drawing history.
@@ -227,11 +211,8 @@ func (i *images) restore() error {
 	}
 
 	for _, img := range sorted {
-		if err := img.restore(); err != nil {
-			return err
-		}
+		img.restore()
 	}
-	return nil
 }
 
 // InitializeGraphicsDriverState initializes the graphics driver state.

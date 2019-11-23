@@ -16,6 +16,7 @@ package graphicscommand
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/hajimehoshi/ebiten/internal/affine"
 	"github.com/hajimehoshi/ebiten/internal/driver"
@@ -97,8 +98,11 @@ func (q *commandQueue) appendVertices(vertices []float32, width, height float32)
 		q.srcSizes = append(q.srcSizes, make([]size, n/graphics.VertexFloatNum)...)
 	}
 	copy(q.vertices[q.nvertices:], vertices)
-	for i := 0; i < len(vertices)/graphics.VertexFloatNum; i++ {
-		idx := q.nvertices/graphics.VertexFloatNum + i
+
+	n := len(vertices) / graphics.VertexFloatNum
+	base := q.nvertices / graphics.VertexFloatNum
+	for i := 0; i < n; i++ {
+		idx := base + i
 		q.srcSizes[idx].width = width
 		q.srcSizes[idx].height = height
 	}
@@ -154,7 +158,8 @@ func (q *commandQueue) EnqueueDrawTrianglesCommand(dst, src *Image, vertices []f
 	}
 
 	n := len(vertices) / graphics.VertexFloatNum
-	q.appendVertices(vertices, float32(graphics.InternalImageSize(src.width)), float32(graphics.InternalImageSize(src.height)))
+	iw, ih := src.InternalSize()
+	q.appendVertices(vertices, float32(iw), float32(ih))
 	q.appendIndices(indices, uint16(q.nextIndex))
 	q.nextIndex += n
 	q.tmpNumIndices += len(indices)
@@ -171,6 +176,10 @@ func (q *commandQueue) Enqueue(command command) {
 	q.commands = append(q.commands, command)
 }
 
+func fract(x float32) float32 {
+	return x - float32(math.Floor(float64(x)))
+}
+
 // Flush flushes the command queue.
 func (q *commandQueue) Flush() {
 	if q.err != nil {
@@ -184,21 +193,65 @@ func (q *commandQueue) Flush() {
 	}
 
 	if theGraphicsDriver.HasHighPrecisionFloat() {
-		// Adjust texels.
+		const dstAdjustmentFactor = 1.0 / 256.0
 		const texelAdjustmentFactor = 1.0 / 512.0
-		for i := 0; i < q.nvertices/graphics.VertexFloatNum; i++ {
+
+		n := q.nvertices / graphics.VertexFloatNum
+		for i := 0; i < n; i++ {
 			s := q.srcSizes[i]
+
+			// Convert pixels to texels.
+			vs[i*graphics.VertexFloatNum+2] /= s.width
+			vs[i*graphics.VertexFloatNum+3] /= s.height
+			vs[i*graphics.VertexFloatNum+4] /= s.width
+			vs[i*graphics.VertexFloatNum+5] /= s.height
+			vs[i*graphics.VertexFloatNum+6] /= s.width
+			vs[i*graphics.VertexFloatNum+7] /= s.height
+
+			// Adjust the destination position to avoid jaggy (#929).
+			// This is not a perfect solution since texels on a texture can take a position on borders
+			// which can cause jaggy. But adjusting only edges should work in most cases.
+			// The ideal solution is to fix shaders, but this makes the applications slow by adding 'if'
+			// branches.
+			switch f := fract(vs[i*graphics.VertexFloatNum+0]); {
+			case 0.5-dstAdjustmentFactor <= f && f < 0.5:
+				vs[i*graphics.VertexFloatNum+0] -= f - (0.5 - dstAdjustmentFactor)
+			case 0.5 <= f && f < 0.5+dstAdjustmentFactor:
+				vs[i*graphics.VertexFloatNum+0] += (0.5 + dstAdjustmentFactor) - f
+			}
+			switch f := fract(vs[i*graphics.VertexFloatNum+1]); {
+			case 0.5-dstAdjustmentFactor <= f && f < 0.5:
+				vs[i*graphics.VertexFloatNum+1] -= f - (0.5 - dstAdjustmentFactor)
+			case 0.5 <= f && f < 0.5+dstAdjustmentFactor:
+				vs[i*graphics.VertexFloatNum+1] += (0.5 + dstAdjustmentFactor) - f
+			}
+
+			// Adjust regions not to violate neighborhoods (#317, #558, #724).
 			vs[i*graphics.VertexFloatNum+6] -= 1.0 / s.width * texelAdjustmentFactor
 			vs[i*graphics.VertexFloatNum+7] -= 1.0 / s.height * texelAdjustmentFactor
+		}
+	} else {
+		n := q.nvertices / graphics.VertexFloatNum
+		for i := 0; i < n; i++ {
+			s := q.srcSizes[i]
+
+			// Convert pixels to texels.
+			vs[i*graphics.VertexFloatNum+2] /= s.width
+			vs[i*graphics.VertexFloatNum+3] /= s.height
+			vs[i*graphics.VertexFloatNum+4] /= s.width
+			vs[i*graphics.VertexFloatNum+5] /= s.height
+			vs[i*graphics.VertexFloatNum+6] /= s.width
+			vs[i*graphics.VertexFloatNum+7] /= s.height
 		}
 	}
 
 	theGraphicsDriver.Begin()
-	for len(q.commands) > 0 {
+	cs := q.commands
+	for len(cs) > 0 {
 		nv := 0
 		ne := 0
 		nc := 0
-		for _, c := range q.commands {
+		for _, c := range cs {
 			if c.NumIndices() > graphics.IndicesNum {
 				panic(fmt.Sprintf("graphicscommand: c.NumIndices() must be <= graphics.IndicesNum but not at Flush: c.NumIndices(): %d, graphics.IndicesNum: %d", c.NumIndices(), graphics.IndicesNum))
 			}
@@ -215,7 +268,7 @@ func (q *commandQueue) Flush() {
 			vs = vs[nv:]
 		}
 		indexOffset := 0
-		for _, c := range q.commands[:nc] {
+		for _, c := range cs[:nc] {
 			if err := c.Exec(indexOffset); err != nil {
 				q.err = err
 				return
@@ -232,10 +285,10 @@ func (q *commandQueue) Flush() {
 			// Call glFlush to prevent black flicking (especially on Android (#226) and iOS).
 			theGraphicsDriver.Flush()
 		}
-		q.commands = q.commands[nc:]
+		cs = cs[nc:]
 	}
 	theGraphicsDriver.End()
-	q.commands = nil
+	q.commands = q.commands[:0]
 	q.nvertices = 0
 	q.nindices = 0
 	q.tmpNumIndices = 0
@@ -265,7 +318,70 @@ type drawTrianglesCommand struct {
 }
 
 func (c *drawTrianglesCommand) String() string {
-	return fmt.Sprintf("draw-triangles: dst: %p <- src: %p, colorm: %v, mode %d, filter: %d, address: %d", c.dst, c.src, c.color, c.mode, c.filter, c.address)
+	mode := ""
+	switch c.mode {
+	case driver.CompositeModeSourceOver:
+		mode = "source-over"
+	case driver.CompositeModeClear:
+		mode = "clear"
+	case driver.CompositeModeCopy:
+		mode = "copy"
+	case driver.CompositeModeDestination:
+		mode = "destination"
+	case driver.CompositeModeDestinationOver:
+		mode = "destination-over"
+	case driver.CompositeModeSourceIn:
+		mode = "source-in"
+	case driver.CompositeModeDestinationIn:
+		mode = "destination-in"
+	case driver.CompositeModeSourceOut:
+		mode = "source-out"
+	case driver.CompositeModeDestinationOut:
+		mode = "destination-out"
+	case driver.CompositeModeSourceAtop:
+		mode = "source-atop"
+	case driver.CompositeModeDestinationAtop:
+		mode = "destination-atop"
+	case driver.CompositeModeXor:
+		mode = "xor"
+	case driver.CompositeModeLighter:
+		mode = "lighter"
+	default:
+		panic(fmt.Sprintf("graphicscommand: invalid composite mode: %d", c.mode))
+	}
+
+	filter := ""
+	switch c.filter {
+	case driver.FilterNearest:
+		filter = "nearest"
+	case driver.FilterLinear:
+		filter = "linear"
+	case driver.FilterScreen:
+		filter = "screen"
+	default:
+		panic(fmt.Sprintf("graphicscommand: invalid filter: %d", c.filter))
+	}
+
+	address := ""
+	switch c.address {
+	case driver.AddressClampToZero:
+		address = "clamp_to_zero"
+	case driver.AddressRepeat:
+		address = "repeat"
+	default:
+		panic(fmt.Sprintf("graphicscommand: invalid address: %d", c.address))
+	}
+
+	dst := fmt.Sprintf("%d", c.dst.id)
+	if c.dst.screen {
+		dst += " (screen)"
+	}
+	src := fmt.Sprintf("%d", c.src.id)
+	if c.src.screen {
+		src += " (screen)"
+	}
+
+	return fmt.Sprintf("draw-triangles: dst: %s <- src: %s, colorm: %v, mode %s, filter: %s, address: %s", dst, src, c.color, mode, filter, address)
 }
 
 // Exec executes the drawTrianglesCommand.
@@ -334,7 +450,7 @@ type replacePixelsCommand struct {
 }
 
 func (c *replacePixelsCommand) String() string {
-	return fmt.Sprintf("replace-pixels: dst: %p, x: %d, y: %d, width: %d, height: %d", c.dst, c.x, c.y, c.width, c.height)
+	return fmt.Sprintf("replace-pixels: dst: %d, x: %d, y: %d, width: %d, height: %d", c.dst.id, c.x, c.y, c.width, c.height)
 }
 
 // Exec executes the replacePixelsCommand.
@@ -361,45 +477,6 @@ func (c *replacePixelsCommand) CanMerge(dst, src *Image, color *affine.ColorM, m
 	return false
 }
 
-type copyPixelsCommand struct {
-	dst *Image
-	src *Image
-}
-
-func (c *copyPixelsCommand) String() string {
-	return fmt.Sprintf("copy-pixels: dst: %p <- src: %p", c.dst, c.src)
-}
-
-func (c *copyPixelsCommand) Exec(indexOffset int) error {
-	p, err := c.src.image.Pixels()
-	if err != nil {
-		return err
-	}
-	if c.dst.width < c.src.width || c.dst.height < c.src.height {
-		return fmt.Errorf("graphicscommand: the destination size (%d, %d) must include the source size (%d, %d)", c.dst.width, c.dst.height, c.src.width, c.src.height)
-	}
-	c.dst.image.ReplacePixels(p, 0, 0, c.src.width, c.src.height)
-	return nil
-}
-
-func (c *copyPixelsCommand) NumVertices() int {
-	return 0
-}
-
-func (c *copyPixelsCommand) NumIndices() int {
-	return 0
-}
-
-func (c *copyPixelsCommand) AddNumVertices(n int) {
-}
-
-func (c *copyPixelsCommand) AddNumIndices(n int) {
-}
-
-func (c *copyPixelsCommand) CanMerge(dst, src *Image, color *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) bool {
-	return false
-}
-
 type pixelsCommand struct {
 	result []byte
 	img    *Image
@@ -416,7 +493,7 @@ func (c *pixelsCommand) Exec(indexOffset int) error {
 }
 
 func (c *pixelsCommand) String() string {
-	return fmt.Sprintf("pixels: img: %p", c.img)
+	return fmt.Sprintf("pixels: image: %d", c.img.id)
 }
 
 func (c *pixelsCommand) NumVertices() int {
@@ -443,7 +520,7 @@ type disposeCommand struct {
 }
 
 func (c *disposeCommand) String() string {
-	return fmt.Sprintf("dispose: target: %p", c.target)
+	return fmt.Sprintf("dispose: target: %d", c.target.id)
 }
 
 // Exec executes the disposeCommand.
@@ -478,7 +555,7 @@ type newImageCommand struct {
 }
 
 func (c *newImageCommand) String() string {
-	return fmt.Sprintf("new-image: result: %p, width: %d, height: %d", c.result, c.width, c.height)
+	return fmt.Sprintf("new-image: result: %d, width: %d, height: %d", c.result.id, c.width, c.height)
 }
 
 // Exec executes a newImageCommand.
@@ -517,7 +594,7 @@ type newScreenFramebufferImageCommand struct {
 }
 
 func (c *newScreenFramebufferImageCommand) String() string {
-	return fmt.Sprintf("new-screen-framebuffer-image: result: %p, width: %d, height: %d", c.result, c.width, c.height)
+	return fmt.Sprintf("new-screen-framebuffer-image: result: %d, width: %d, height: %d", c.result.id, c.width, c.height)
 }
 
 // Exec executes a newScreenFramebufferImageCommand.

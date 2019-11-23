@@ -62,12 +62,12 @@ type Context struct {
 
 	sampleRate int
 	err        error
-	suspended  bool
 	ready      bool
 
 	players map[*playerImpl]struct{}
 
-	m sync.Mutex
+	m         sync.Mutex
+	semaphore chan struct{}
 }
 
 var (
@@ -99,19 +99,16 @@ func NewContext(sampleRate int) (*Context, error) {
 		c:          newContext(sampleRate),
 		players:    map[*playerImpl]struct{}{},
 		inited:     make(chan struct{}),
+		semaphore:  make(chan struct{}, 1),
 	}
 	theContext = c
 
 	h := getHook()
 	h.OnSuspendAudio(func() {
-		c.m.Lock()
-		c.suspended = true
-		c.m.Unlock()
+		c.semaphore <- struct{}{}
 	})
 	h.OnResumeAudio(func() {
-		c.m.Lock()
-		c.suspended = false
-		c.m.Unlock()
+		<-c.semaphore
 	})
 
 	h.AppendHookOnBeforeUpdate(func() error {
@@ -139,13 +136,6 @@ func CurrentContext() *Context {
 	c := theContext
 	theContextLock.Unlock()
 	return c
-}
-
-func (c *Context) playable() bool {
-	c.m.Lock()
-	s := c.suspended
-	c.m.Unlock()
-	return !s
 }
 
 func (c *Context) hasError() bool {
@@ -195,8 +185,26 @@ func (c *Context) removePlayer(p *playerImpl) {
 // On some browsers, user interaction like click or pressing keys is required to start audio.
 func (c *Context) IsReady() bool {
 	c.m.Lock()
+	defer c.m.Unlock()
+
 	r := c.ready
-	c.m.Unlock()
+	if r {
+		return r
+	}
+	if len(c.players) != 0 {
+		return r
+	}
+
+	// Create another goroutine since (*Player).Play can lock the context's mutex.
+	go func() {
+		// The audio context is never ready unless there is a player. This is
+		// problematic when a user tries to play audio after the context is ready.
+		// Play a dummy player to avoid the blocking (#969).
+		// Use a long enough buffer so that writing doesn't finish immediately (#970).
+		p, _ := NewPlayerFromBytes(c, make([]byte, bufferSize()*2))
+		p.Play()
+	}()
+
 	return r
 }
 
@@ -447,11 +455,10 @@ func (p *playerImpl) read() ([]byte, bool) {
 
 	const bufSize = 2048
 
-	if !p.context.playable() {
-		// Fill zero values, or the driver can block forever as trying to proceed.
-		buf := make([]byte, bufSize)
-		return buf, true
-	}
+	p.context.semaphore <- struct{}{}
+	defer func() {
+		<-p.context.semaphore
+	}()
 
 	newBuf := make([]byte, bufSize-len(p.buf))
 	n, err := p.src.Read(newBuf)

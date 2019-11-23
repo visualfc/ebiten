@@ -18,7 +18,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"flag"
 	"fmt"
 	"image"
@@ -44,9 +43,9 @@ func init() {
 }
 
 const (
-	initScreenWidth  = 320
-	initScreenHeight = 240
-	initScreenScale  = 2
+	initScreenWidth  = 480
+	initScreenHeight = 360
+	initScreenScale  = 1
 )
 
 var (
@@ -57,29 +56,23 @@ var (
 func createRandomIconImage() image.Image {
 	const size = 32
 
-	r := uint8(rand.Intn(0x100))
-	g := uint8(rand.Intn(0x100))
-	b := uint8(rand.Intn(0x100))
+	r := byte(rand.Intn(0x100))
+	g := byte(rand.Intn(0x100))
+	b := byte(rand.Intn(0x100))
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 	for j := 0; j < size; j++ {
 		for i := 0; i < size; i++ {
 			img.Pix[j*img.Stride+4*i] = r
 			img.Pix[j*img.Stride+4*i+1] = g
 			img.Pix[j*img.Stride+4*i+2] = b
-			img.Pix[j*img.Stride+4*i+3] = uint8(float64(i+j) / float64(2*size) * 0xff)
+			img.Pix[j*img.Stride+4*i+3] = byte(float64(i+j) / float64(2*size) * 0xff)
 		}
 	}
 
 	return img
 }
 
-var terminated = errors.New("terminated")
-
 func update(screen *ebiten.Image) error {
-	if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
-		return terminated
-	}
-
 	screenScale := ebiten.ScreenScale()
 	const d = 16
 	screenWidth, screenHeight := screen.Size()
@@ -180,14 +173,13 @@ func update(screen *ebiten.Image) error {
 		tpsStr = fmt.Sprintf("%d", t)
 	}
 	msg := fmt.Sprintf(`Press arrow keys to change the window size
-Press S key to change the window scale
-Press F key to switch the fullscreen state
+Press S key to change the window scale (only for desktops)
+Press F key to switch the fullscreen state (only for desktops)
 Press B key to switch the run-in-background state
 Press C key to switch the cursor visibility
-Press I key to change the window icon
+Press I key to change the window icon (only for desktops)
 Press V key to switch vsync
 Press T key to switch TPS (ticks per second)
-Press Q key to quit
 Cursor: (%d, %d)
 TPS: Current: %0.2f / Max: %s
 FPS: %0.2f
@@ -222,7 +214,7 @@ func main() {
 
 	ebiten.SetWindowDecorated(*windowDecorated)
 
-	if err := ebiten.Run(update, initScreenWidth, initScreenHeight, initScreenScale, "Window Size (Ebiten Demo)"); err != nil && err != terminated {
+	if err := ebiten.Run(update, initScreenWidth, initScreenHeight, initScreenScale, "Window Size (Ebiten Demo)"); err != nil {
 		log.Fatal(err)
 	}
 }

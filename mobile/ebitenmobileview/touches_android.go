@@ -1,4 +1,4 @@
-// Copyright 2019 The Ebiten Authors
+// Copyright 2016 Hajime Hoshi
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,24 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build !android
-// +build !darwin
-// +build !freebsd
-// +build !ios
-// +build !js
-// +build !linux,cgo !cgo
-// +build !windows
+package ebitenmobileview
 
-package ebiten
-
-import (
-	"github.com/hajimehoshi/ebiten/internal/driver"
-)
-
-func uiDriver() driver.UI {
-	if !isPlayground {
-		panic("ebiten: a UI driver is not implemented on this environment")
+func UpdateTouchesOnAndroid(action int, id int, x, y int) {
+	switch action {
+	case 0x00, 0x05, 0x02: // ACTION_DOWN, ACTION_POINTER_DOWN, ACTION_MOVE
+		touches[id] = position{x, y}
+		updateTouches()
+	case 0x01, 0x06: // ACTION_UP, ACTION_POINTER_UP
+		delete(touches, id)
+		updateTouches()
 	}
-	// TODO: Implement this
-	return nil
+}
+
+func UpdateTouchesOnIOS(phase int, ptr int64, x, y int) {
+	panic("ebitenmobileview: updateTouchesOnIOSImpl must not be called on Android")
 }

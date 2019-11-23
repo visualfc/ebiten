@@ -13,23 +13,16 @@
 // limitations under the License.
 
 // +build !android
-// +build !darwin
-// +build !freebsd
 // +build !ios
-// +build !js
-// +build !linux,cgo !cgo
-// +build !windows
 
-package ebiten
+package ebitenmobileview
 
-import (
-	"github.com/hajimehoshi/ebiten/internal/driver"
-)
-
-func graphicsDriver() driver.Graphics {
-	if !isPlayground {
-		panic("ebiten: a graphics driver is not implemented on this environment")
-	}
-	// TODO: Implement this
+func update() error {
 	return nil
+}
+
+func UpdateTouchesOnAndroid(action int, id int, x, y int) {
+}
+
+func UpdateTouchesOnIOS(phase int, ptr int64, x, y int) {
 }

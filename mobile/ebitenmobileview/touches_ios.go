@@ -14,7 +14,7 @@
 
 // +build ios
 
-package mobile
+package ebitenmobileview
 
 import (
 	"fmt"
@@ -43,11 +43,11 @@ func getIDFromPtr(ptr int64) int {
 	return id
 }
 
-func updateTouchesOnAndroid(action int, id int, x, y int) {
-	panic("mobile: updateTouchesOnAndroid must not be called on iOS")
+func UpdateTouchesOnAndroid(action int, id int, x, y int) {
+	panic("ebitenmobileview: updateTouchesOnAndroid must not be called on iOS")
 }
 
-func updateTouchesOnIOSImpl(phase int, ptr int64, x, y int) {
+func UpdateTouchesOnIOS(phase int, ptr int64, x, y int) {
 	switch phase {
 	case C.UITouchPhaseBegan, C.UITouchPhaseMoved, C.UITouchPhaseStationary:
 		id := getIDFromPtr(ptr)
@@ -59,6 +59,6 @@ func updateTouchesOnIOSImpl(phase int, ptr int64, x, y int) {
 		delete(touches, id)
 		updateTouches()
 	default:
-		panic(fmt.Sprintf("mobile: invalid phase: %d", phase))
+		panic(fmt.Sprintf("ebitenmobileview: invalid phase: %d", phase))
 	}
 }

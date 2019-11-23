@@ -280,6 +280,7 @@ type rpsKey struct {
 	filter        driver.Filter
 	address       driver.Address
 	compositeMode driver.CompositeMode
+	screen        bool
 }
 
 type Driver struct {
@@ -343,6 +344,11 @@ func (d *Driver) SetWindow(window uintptr) {
 	})
 }
 
+func (d *Driver) SetUIView(uiview uintptr) {
+	// TODO: Should this be called on the main thread?
+	d.view.setUIView(uiview)
+}
+
 func (d *Driver) SetVertices(vertices []float32, indices []uint16) {
 	d.t.Call(func() error {
 		if d.vb != (mtl.Buffer{}) {
@@ -351,8 +357,8 @@ func (d *Driver) SetVertices(vertices []float32, indices []uint16) {
 		if d.ib != (mtl.Buffer{}) {
 			d.ib.Release()
 		}
-		d.vb = d.view.getMTLDevice().MakeBufferWithBytes(unsafe.Pointer(&vertices[0]), unsafe.Sizeof(vertices[0])*uintptr(len(vertices)), mtl.ResourceStorageModeManaged)
-		d.ib = d.view.getMTLDevice().MakeBufferWithBytes(unsafe.Pointer(&indices[0]), unsafe.Sizeof(indices[0])*uintptr(len(indices)), mtl.ResourceStorageModeManaged)
+		d.vb = d.view.getMTLDevice().MakeBufferWithBytes(unsafe.Pointer(&vertices[0]), unsafe.Sizeof(vertices[0])*uintptr(len(vertices)), resourceStorageMode)
+		d.ib = d.view.getMTLDevice().MakeBufferWithBytes(unsafe.Pointer(&indices[0]), unsafe.Sizeof(indices[0])*uintptr(len(indices)), resourceStorageMode)
 		return nil
 	})
 }
@@ -403,11 +409,8 @@ func (d *Driver) NewImage(width, height int) (driver.Image, error) {
 		PixelFormat: mtl.PixelFormatRGBA8UNorm,
 		Width:       graphics.InternalImageSize(width),
 		Height:      graphics.InternalImageSize(height),
-		StorageMode: mtl.StorageModeManaged,
-
-		// MTLTextureUsageRenderTarget might cause a problematic render result. Not sure the reason.
-		// Usage: mtl.TextureUsageShaderRead | mtl.TextureUsageRenderTarget
-		Usage: mtl.TextureUsageShaderRead,
+		StorageMode: storageMode,
+		Usage:       textureUsage,
 	}
 	var t mtl.Texture
 	d.t.Call(func() error {
@@ -511,46 +514,54 @@ func (d *Driver) Reset() error {
 			}
 		}
 
-		for _, cm := range []bool{false, true} {
-			for _, a := range []driver.Address{
-				driver.AddressClampToZero,
-				driver.AddressRepeat,
-			} {
-				for _, f := range []driver.Filter{
-					driver.FilterNearest,
-					driver.FilterLinear,
+		for _, screen := range []bool{false, true} {
+			for _, cm := range []bool{false, true} {
+				for _, a := range []driver.Address{
+					driver.AddressClampToZero,
+					driver.AddressRepeat,
 				} {
-					for c := driver.CompositeModeSourceOver; c <= driver.CompositeModeMax; c++ {
-						cmi := 0
-						if cm {
-							cmi = 1
-						}
-						fs, err := lib.MakeFunction(fmt.Sprintf("FragmentShader_%d_%d_%d", cmi, f, a))
-						if err != nil {
-							return err
-						}
-						rpld := mtl.RenderPipelineDescriptor{
-							VertexFunction:   vs,
-							FragmentFunction: fs,
-						}
-						rpld.ColorAttachments[0].PixelFormat = mtl.PixelFormatRGBA8UNorm
-						rpld.ColorAttachments[0].BlendingEnabled = true
+					for _, f := range []driver.Filter{
+						driver.FilterNearest,
+						driver.FilterLinear,
+					} {
+						for c := driver.CompositeModeSourceOver; c <= driver.CompositeModeMax; c++ {
+							cmi := 0
+							if cm {
+								cmi = 1
+							}
+							fs, err := lib.MakeFunction(fmt.Sprintf("FragmentShader_%d_%d_%d", cmi, f, a))
+							if err != nil {
+								return err
+							}
+							rpld := mtl.RenderPipelineDescriptor{
+								VertexFunction:   vs,
+								FragmentFunction: fs,
+							}
 
-						src, dst := c.Operations()
-						rpld.ColorAttachments[0].DestinationAlphaBlendFactor = conv(dst)
-						rpld.ColorAttachments[0].DestinationRGBBlendFactor = conv(dst)
-						rpld.ColorAttachments[0].SourceAlphaBlendFactor = conv(src)
-						rpld.ColorAttachments[0].SourceRGBBlendFactor = conv(src)
-						rps, err := d.view.getMTLDevice().MakeRenderPipelineState(rpld)
-						if err != nil {
-							return err
+							pix := mtl.PixelFormatRGBA8UNorm
+							if screen {
+								pix = d.view.colorPixelFormat()
+							}
+							rpld.ColorAttachments[0].PixelFormat = pix
+							rpld.ColorAttachments[0].BlendingEnabled = true
+
+							src, dst := c.Operations()
+							rpld.ColorAttachments[0].DestinationAlphaBlendFactor = conv(dst)
+							rpld.ColorAttachments[0].DestinationRGBBlendFactor = conv(dst)
+							rpld.ColorAttachments[0].SourceAlphaBlendFactor = conv(src)
+							rpld.ColorAttachments[0].SourceRGBBlendFactor = conv(src)
+							rps, err := d.view.getMTLDevice().MakeRenderPipelineState(rpld)
+							if err != nil {
+								return err
+							}
+							d.rpss[rpsKey{
+								screen:        screen,
+								useColorM:     cm,
+								filter:        f,
+								address:       a,
+								compositeMode: c,
+							}] = rps
 						}
-						d.rpss[rpsKey{
-							useColorM:     cm,
-							filter:        f,
-							address:       a,
-							compositeMode: c,
-						}] = rps
 					}
 				}
 			}
@@ -604,13 +615,21 @@ func (d *Driver) Draw(indexLen int, indexOffset int, mode driver.CompositeMode, 
 			rce.SetRenderPipelineState(d.screenRPS)
 		} else {
 			rce.SetRenderPipelineState(d.rpss[rpsKey{
+				screen:        d.dst.screen,
 				useColorM:     colorM != nil,
 				filter:        filter,
 				address:       address,
 				compositeMode: mode,
 			}])
 		}
-		rce.SetViewport(mtl.Viewport{0, 0, float64(w), float64(h), -1, 1})
+		rce.SetViewport(mtl.Viewport{
+			OriginX: 0,
+			OriginY: 0,
+			Width:   float64(w),
+			Height:  float64(h),
+			ZNear:   -1,
+			ZFar:    1,
+		})
 		rce.SetVertexBuffer(d.vb, 0, 0)
 
 		viewportSize := [...]float32{float32(w), float32(h)}
@@ -622,11 +641,9 @@ func (d *Driver) Draw(indexLen int, indexOffset int, mode driver.CompositeMode, 
 		}
 		rce.SetFragmentBytes(unsafe.Pointer(&sourceSize[0]), unsafe.Sizeof(sourceSize), 2)
 
-		if colorM != nil {
-			esBody, esTranslate := colorM.UnsafeElements()
-			rce.SetFragmentBytes(unsafe.Pointer(&esBody[0]), unsafe.Sizeof(esBody[0])*uintptr(len(esBody)), 3)
-			rce.SetFragmentBytes(unsafe.Pointer(&esTranslate[0]), unsafe.Sizeof(esTranslate[0])*uintptr(len(esTranslate)), 4)
-		}
+		esBody, esTranslate := colorM.UnsafeElements()
+		rce.SetFragmentBytes(unsafe.Pointer(&esBody[0]), unsafe.Sizeof(esBody[0])*uintptr(len(esBody)), 3)
+		rce.SetFragmentBytes(unsafe.Pointer(&esTranslate[0]), unsafe.Sizeof(esTranslate[0])*uintptr(len(esTranslate)), 4)
 
 		scale := float32(d.dst.width) / float32(d.src.width)
 		rce.SetFragmentBytes(unsafe.Pointer(&scale), unsafe.Sizeof(scale), 5)
@@ -767,7 +784,7 @@ func (i *Image) Pixels() ([]byte, error) {
 	b := make([]byte, 4*i.width*i.height)
 	i.driver.t.Call(func() error {
 		i.texture.GetBytes(&b[0], uintptr(4*i.width), mtl.Region{
-			Size: mtl.Size{i.width, i.height, 1},
+			Size: mtl.Size{Width: i.width, Height: i.height, Depth: 1},
 		}, 0)
 		return nil
 	})
@@ -793,8 +810,8 @@ func (i *Image) ReplacePixels(pixels []byte, x, y, width, height int) {
 
 	i.driver.t.Call(func() error {
 		i.texture.ReplaceRegion(mtl.Region{
-			Origin: mtl.Origin{x, y, 0},
-			Size:   mtl.Size{width, height, 1},
+			Origin: mtl.Origin{X: x, Y: y, Z: 0},
+			Size:   mtl.Size{Width: width, Height: height, Depth: 1},
 		}, 0, unsafe.Pointer(&pixels[0]), 4*width)
 		return nil
 	})

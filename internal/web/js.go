@@ -17,36 +17,32 @@
 package web
 
 import (
-	"runtime"
 	"strings"
 	"syscall/js"
 )
-
-func IsGopherJS() bool {
-	return runtime.GOOS != "js"
-}
 
 func IsBrowser() bool {
 	return true
 }
 
-var userAgent = js.Global().Get("navigator").Get("userAgent").String()
+var (
+	userAgent = js.Global().Get("navigator").Get("userAgent").String()
+
+	isIOSSafari     bool
+	isAndroidChrome bool
+)
+
+func init() {
+	isIOSSafari = strings.Contains(userAgent, "iPhone") || strings.Contains(userAgent, "iPad")
+	isAndroidChrome = strings.Contains(userAgent, "Android") && strings.Contains(userAgent, "Chrome")
+}
 
 func IsIOSSafari() bool {
-	if !strings.Contains(userAgent, "iPhone") {
-		return false
-	}
-	return true
+	return isIOSSafari
 }
 
 func IsAndroidChrome() bool {
-	if !strings.Contains(userAgent, "Android") {
-		return false
-	}
-	if !strings.Contains(userAgent, "Chrome") {
-		return false
-	}
-	return true
+	return isAndroidChrome
 }
 
 func IsMobileBrowser() bool {

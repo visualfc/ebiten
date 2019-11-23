@@ -1,4 +1,4 @@
-// Copyright 2016 Hajime Hoshi
+// Copyright 2019 The Ebiten Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,31 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build android ios
+// +build darwin,ios
+// +build !arm
+// +build !arm64
 
-package mobile
+package ebitenmobileview
 
 import (
-	"github.com/hajimehoshi/ebiten/internal/uidriver/mobile"
+	"runtime"
 )
 
-type position struct {
-	x int
-	y int
-}
-
-var (
-	touches = map[int]position{}
-)
-
-func updateTouches() {
-	ts := []*mobile.Touch{}
-	for id, position := range touches {
-		ts = append(ts, &mobile.Touch{
-			ID: id,
-			X:  position.x,
-			Y:  position.y,
-		})
-	}
-	mobile.Get().UpdateInput(ts)
+func SetUIView(uiview int64) {
+	panic("ebitenmobileview: SetUIView is not available on GOARCH=" + runtime.GOARCH)
 }

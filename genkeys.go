@@ -24,6 +24,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,7 +35,7 @@ import (
 
 var (
 	nameToGLFWKeys    map[string]glfw.Key
-	nameToJSKeyCodes  map[string][]string
+	nameToJSKeyCode   map[string]string
 	keyCodeToNameEdge map[int]string
 )
 
@@ -85,65 +86,68 @@ func init() {
 		"Menu":         glfw.KeyMenu,
 		"Last":         glfw.KeyLast,
 	}
-	nameToJSKeyCodes = map[string][]string{
-		"Comma":        {"Comma"},
-		"Period":       {"Period"},
-		"Alt":          {"AltLeft", "AltRight"},
-		"CapsLock":     {"CapsLock"},
-		"Control":      {"ControlLeft", "ControlRight"},
-		"Shift":        {"ShiftLeft", "ShiftRight"},
-		"Enter":        {"Enter"},
-		"Space":        {"Space"},
-		"Tab":          {"Tab"},
-		"Delete":       {"Delete"},
-		"End":          {"End"},
-		"Home":         {"Home"},
-		"Insert":       {"Insert"},
-		"PageDown":     {"PageDown"},
-		"PageUp":       {"PageUp"},
-		"Down":         {"ArrowDown"},
-		"Left":         {"ArrowLeft"},
-		"Right":        {"ArrowRight"},
-		"Up":           {"ArrowUp"},
-		"Escape":       {"Escape"},
-		"Backspace":    {"Backspace"},
-		"Apostrophe":   {"Quote"},
-		"Minus":        {"Minus"},
-		"Slash":        {"Slash"},
-		"Semicolon":    {"Semicolon"},
-		"Equal":        {"Equal"},
-		"LeftBracket":  {"BracketLeft"},
-		"Backslash":    {"Backslash"},
-		"RightBracket": {"BracketRight"},
-		"GraveAccent":  {"Backquote"},
-		"NumLock":      {"NumLock"},
-		"Pause":        {"Pause"},
-		"PrintScreen":  {"PrintScreen"},
-		"ScrollLock":   {"ScrollLock"},
-		"Menu":         {"ContextMenu"},
+	nameToJSKeyCode = map[string]string{
+		"Comma":        "Comma",
+		"Period":       "Period",
+		"LeftAlt":      "AltLeft",
+		"RightAlt":     "AltRight",
+		"CapsLock":     "CapsLock",
+		"LeftControl":  "ControlLeft",
+		"RightControl": "ControlRight",
+		"LeftShift":    "ShiftLeft",
+		"RightShift":   "ShiftRight",
+		"Enter":        "Enter",
+		"Space":        "Space",
+		"Tab":          "Tab",
+		"Delete":       "Delete",
+		"End":          "End",
+		"Home":         "Home",
+		"Insert":       "Insert",
+		"PageDown":     "PageDown",
+		"PageUp":       "PageUp",
+		"Down":         "ArrowDown",
+		"Left":         "ArrowLeft",
+		"Right":        "ArrowRight",
+		"Up":           "ArrowUp",
+		"Escape":       "Escape",
+		"Backspace":    "Backspace",
+		"Apostrophe":   "Quote",
+		"Minus":        "Minus",
+		"Slash":        "Slash",
+		"Semicolon":    "Semicolon",
+		"Equal":        "Equal",
+		"LeftBracket":  "BracketLeft",
+		"Backslash":    "Backslash",
+		"RightBracket": "BracketRight",
+		"GraveAccent":  "Backquote",
+		"NumLock":      "NumLock",
+		"Pause":        "Pause",
+		"PrintScreen":  "PrintScreen",
+		"ScrollLock":   "ScrollLock",
+		"Menu":         "ContextMenu",
 	}
 	// ASCII: 0 - 9
 	for c := '0'; c <= '9'; c++ {
 		nameToGLFWKeys[string(c)] = glfw.Key0 + glfw.Key(c) - '0'
-		nameToJSKeyCodes[string(c)] = []string{"Digit" + string(c)}
+		nameToJSKeyCode[string(c)] = "Digit" + string(c)
 	}
 	// ASCII: A - Z
 	for c := 'A'; c <= 'Z'; c++ {
 		nameToGLFWKeys[string(c)] = glfw.KeyA + glfw.Key(c) - 'A'
-		nameToJSKeyCodes[string(c)] = []string{"Key" + string(c)}
+		nameToJSKeyCode[string(c)] = "Key" + string(c)
 	}
 	// Function keys
 	for i := 1; i <= 12; i++ {
 		name := "F" + strconv.Itoa(i)
 		nameToGLFWKeys[name] = glfw.KeyF1 + glfw.Key(i) - 1
-		nameToJSKeyCodes[name] = []string{name}
+		nameToJSKeyCode[name] = name
 	}
 	// Numpad
 	// https://www.w3.org/TR/uievents-code/#key-numpad-section
 	for c := '0'; c <= '9'; c++ {
 		name := "KP" + string(c)
 		nameToGLFWKeys[name] = glfw.KeyKP0 + glfw.Key(c) - '0'
-		nameToJSKeyCodes[name] = []string{"Numpad" + string(c)}
+		nameToJSKeyCode[name] = "Numpad" + string(c)
 	}
 
 	nameToGLFWKeys["KPDecimal"] = glfw.KeyKPDecimal
@@ -154,23 +158,24 @@ func init() {
 	nameToGLFWKeys["KPEnter"] = glfw.KeyKPEnter
 	nameToGLFWKeys["KPEqual"] = glfw.KeyKPEqual
 
-	nameToJSKeyCodes["KPDecimal"] = []string{"NumpadDecimal"}
-	nameToJSKeyCodes["KPDivide"] = []string{"NumpadDivide"}
-	nameToJSKeyCodes["KPMultiply"] = []string{"NumpadMultiply"}
-	nameToJSKeyCodes["KPSubtract"] = []string{"NumpadSubtract"}
-	nameToJSKeyCodes["KPAdd"] = []string{"NumpadAdd"}
-	nameToJSKeyCodes["KPEnter"] = []string{"NumpadEnter"}
-	nameToJSKeyCodes["KPEqual"] = []string{"NumpadEqual"}
+	nameToJSKeyCode["KPDecimal"] = "NumpadDecimal"
+	nameToJSKeyCode["KPDivide"] = "NumpadDivide"
+	nameToJSKeyCode["KPMultiply"] = "NumpadMultiply"
+	nameToJSKeyCode["KPSubtract"] = "NumpadSubtract"
+	nameToJSKeyCode["KPAdd"] = "NumpadAdd"
+	nameToJSKeyCode["KPEnter"] = "NumpadEnter"
+	nameToJSKeyCode["KPEqual"] = "NumpadEqual"
 }
 
 func init() {
+	// TODO: How should we treat modifier keys? Now 'left' modifier keys are available.
 	keyCodeToNameEdge = map[int]string{
 		0xbc: "Comma",
 		0xbe: "Period",
-		0x12: "Alt",
+		0x12: "LeftAlt",
 		0x14: "CapsLock",
-		0x11: "Control",
-		0x10: "Shift",
+		0x11: "LeftControl",
+		0x10: "LeftShift",
 		0x0D: "Enter",
 		0x20: "Space",
 		0x09: "Tab",
@@ -249,16 +254,29 @@ type Key int
 
 // Keys.
 const (
-{{range $index, $name := .KeyNames}}Key{{$name}} Key = Key(driver.Key{{$name}})
-{{end}}	KeyMax Key = Key{{.LastKeyName}}
+{{range $index, $name := .EbitenKeyNamesWithoutMods}}Key{{$name}} Key = Key(driver.Key{{$name}})
+{{end}}	KeyAlt Key = Key(driver.KeyReserved0)
+	KeyControl Key = Key(driver.KeyReserved1)
+	KeyShift Key = Key(driver.KeyReserved2)
+	KeyMax Key = KeyShift
 )
+
+func (k Key) isValid() bool {
+	switch k {
+	{{range $name := .EbitenKeyNames}}case Key{{$name}}:
+		return true
+	{{end}}
+	default:
+		return false
+	}
+}
 
 // String returns a string representing the key.
 //
 // If k is an undefined key, String returns an empty string.
 func (k Key) String() string {
 	switch k {
-	{{range $name := .KeyNames}}case Key{{$name}}:
+	{{range $name := .EbitenKeyNames}}case Key{{$name}}:
 		return {{$name | printf "%q"}}
 	{{end}}}
 	return ""
@@ -266,7 +284,7 @@ func (k Key) String() string {
 
 func keyNameToKey(name string) (Key, bool) {
 	switch strings.ToLower(name) {
-	{{range $name := .KeyNames}}case {{$name | printf "%q" | ToLower}}:
+	{{range $name := .EbitenKeyNames}}case {{$name | printf "%q" | ToLower}}:
 		return Key{{$name}}, true
 	{{end}}}
 	return 0, false
@@ -282,7 +300,27 @@ package driver
 type Key int
 
 const (
-{{range $index, $name := .KeyNames}}Key{{$name}}{{if eq $index 0}} Key = iota{{end}}
+{{range $index, $name := .DriverKeyNames}}Key{{$name}}{{if eq $index 0}} Key = iota{{end}}
+{{end}}	KeyReserved0
+	KeyReserved1
+	KeyReserved2
+)
+`
+
+const eventKeysTmpl = `{{.License}}
+
+{{.DoNotEdit}}
+
+package event
+
+import (
+	"github.com/hajimehoshi/ebiten/internal/driver"
+)
+
+type Key = driver.Key
+
+const (
+{{range $index, $name := .DriverKeyNames}}Key{{$name}} = driver.Key{{$name}}
 {{end}}
 )
 `
@@ -301,14 +339,8 @@ import (
 )
 
 var glfwKeyCodeToKey = map[glfw.Key]driver.Key{
-{{range $index, $name := .KeyNamesWithoutMods}}glfw.Key{{$name}}: driver.Key{{$name}},
+{{range $index, $name := .DriverKeyNames}}glfw.Key{{$name}}: driver.Key{{$name}},
 {{end}}
-	glfw.KeyLeftAlt:      driver.KeyAlt,
-	glfw.KeyRightAlt:     driver.KeyAlt,
-	glfw.KeyLeftControl:  driver.KeyControl,
-	glfw.KeyRightControl: driver.KeyControl,
-	glfw.KeyLeftShift:    driver.KeyShift,
-	glfw.KeyRightShift:   driver.KeyShift,
 }
 `
 
@@ -324,10 +356,8 @@ import (
 	"github.com/hajimehoshi/ebiten/internal/driver"
 )
 
-var keyToCodes = map[driver.Key][]string{
-{{range $name, $codes := .NameToJSKeyCodes}}driver.Key{{$name}}: []string{
-{{range $code := $codes}}"{{$code}}",{{end}}
-},
+var keyToCode = map[driver.Key]string{
+{{range $name, $code := .NameToJSKeyCode}}driver.Key{{$name}}: {{$code | printf "%q"}},
 {{end}}
 }
 
@@ -351,9 +381,7 @@ const (
 )
 `
 
-type KeyNames []string
-
-func (k KeyNames) digit(name string) int {
+func digitKey(name string) int {
 	if len(name) != 1 {
 		return -1
 	}
@@ -364,7 +392,7 @@ func (k KeyNames) digit(name string) int {
 	return int(c - '0')
 }
 
-func (k KeyNames) alphabet(name string) rune {
+func alphabetKey(name string) rune {
 	if len(name) != 1 {
 		return -1
 	}
@@ -375,7 +403,7 @@ func (k KeyNames) alphabet(name string) rune {
 	return c
 }
 
-func (k KeyNames) function(name string) int {
+func functionKey(name string) int {
 	if len(name) < 2 {
 		return -1
 	}
@@ -389,44 +417,38 @@ func (k KeyNames) function(name string) int {
 	return i
 }
 
-func (k KeyNames) Len() int {
-	return len(k)
-}
-
-func (k KeyNames) Less(i, j int) bool {
-	k0, k1 := k[i], k[j]
-	d0, d1 := k.digit(k0), k.digit(k1)
-	a0, a1 := k.alphabet(k0), k.alphabet(k1)
-	f0, f1 := k.function(k0), k.function(k1)
-	if d0 != -1 {
-		if d1 != -1 {
-			return d0 < d1
+func keyNamesLess(k []string) func(i, j int) bool {
+	return func(i, j int) bool {
+		k0, k1 := k[i], k[j]
+		d0, d1 := digitKey(k0), digitKey(k1)
+		a0, a1 := alphabetKey(k0), alphabetKey(k1)
+		f0, f1 := functionKey(k0), functionKey(k1)
+		if d0 != -1 {
+			if d1 != -1 {
+				return d0 < d1
+			}
+			return true
 		}
-		return true
-	}
-	if a0 != -1 {
+		if a0 != -1 {
+			if d1 != -1 {
+				return false
+			}
+			if a1 != -1 {
+				return a0 < a1
+			}
+			return true
+		}
 		if d1 != -1 {
 			return false
 		}
 		if a1 != -1 {
-			return a0 < a1
+			return false
 		}
-		return true
+		if f0 != -1 && f1 != -1 {
+			return f0 < f1
+		}
+		return k0 < k1
 	}
-	if d1 != -1 {
-		return false
-	}
-	if a1 != -1 {
-		return false
-	}
-	if f0 != -1 && f1 != -1 {
-		return f0 < f1
-	}
-	return k0 < k1
-}
-
-func (k KeyNames) Swap(i, j int) {
-	k[i], k[j] = k[j], k[i]
 }
 
 const license = `// Copyright 2013 The Ebiten Authors
@@ -448,35 +470,41 @@ func main() {
 	// Follow the standard comment rule (https://golang.org/s/generatedcode).
 	doNotEdit := "// Code generated by genkeys.go using 'go generate'. DO NOT EDIT."
 
-	namesSet := map[string]struct{}{}
-	namesWithoutModsSet := map[string]struct{}{}
-	codes := []string{}
-	for name, cs := range nameToJSKeyCodes {
-		namesSet[name] = struct{}{}
-		codes = append(codes, cs...)
-		if name != "Alt" && name != "Control" && name != "Shift" {
-			namesWithoutModsSet[name] = struct{}{}
+	ebitenKeyNames := []string{}
+	ebitenKeyNamesWithoutMods := []string{}
+	driverKeyNames := []string{}
+	for name := range nameToJSKeyCode {
+		driverKeyNames = append(driverKeyNames, name)
+		if !strings.HasSuffix(name, "Alt") && !strings.HasSuffix(name, "Control") && !strings.HasSuffix(name, "Shift") {
+			ebitenKeyNames = append(ebitenKeyNames, name)
+			ebitenKeyNamesWithoutMods = append(ebitenKeyNamesWithoutMods, name)
+			continue
+		}
+		if name == "LeftAlt" {
+			ebitenKeyNames = append(ebitenKeyNames, "Alt")
+			continue
+		}
+		if name == "LeftControl" {
+			ebitenKeyNames = append(ebitenKeyNames, "Control")
+			continue
+		}
+		if name == "LeftShift" {
+			ebitenKeyNames = append(ebitenKeyNames, "Shift")
+			continue
 		}
 	}
-	names := []string{}
-	namesWithoutMods := []string{}
-	for n := range namesSet {
-		names = append(names, n)
-	}
-	for n := range namesWithoutModsSet {
-		namesWithoutMods = append(namesWithoutMods, n)
-	}
 
-	sort.Sort(KeyNames(names))
-	sort.Sort(KeyNames(namesWithoutMods))
-	sort.Strings(codes)
+	sort.Slice(ebitenKeyNames, keyNamesLess(ebitenKeyNames))
+	sort.Slice(ebitenKeyNamesWithoutMods, keyNamesLess(ebitenKeyNamesWithoutMods))
+	sort.Slice(driverKeyNames, keyNamesLess(driverKeyNames))
 
 	for path, tmpl := range map[string]string{
-		"keys.go":                        ebitenKeysTmpl,
-		"internal/driver/keys.go":        driverKeysTmpl,
-		"internal/glfw/keys.go":          glfwKeysTmpl,
-		"internal/uidriver/glfw/keys.go": uidriverGlfwKeysTmpl,
-		"internal/uidriver/js/keys.go":   uidriverJsKeysTmpl,
+		filepath.Join("event", "keys.go"):                        eventKeysTmpl,
+		filepath.Join("internal", "driver", "keys.go"):           driverKeysTmpl,
+		filepath.Join("internal", "glfw", "keys.go"):             glfwKeysTmpl,
+		filepath.Join("internal", "uidriver", "glfw", "keys.go"): uidriverGlfwKeysTmpl,
+		filepath.Join("internal", "uidriver", "js", "keys.go"):   uidriverJsKeysTmpl,
+		filepath.Join("keys.go"):                                 ebitenKeysTmpl,
 	} {
 		f, err := os.Create(path)
 		if err != nil {
@@ -505,17 +533,26 @@ func main() {
 			buildTag = "// +build js"
 		}
 		// NOTE: According to godoc, maps are automatically sorted by key.
-		if err := tmpl.Execute(f, map[string]interface{}{
-			"License":             license,
-			"DoNotEdit":           doNotEdit,
-			"BuildTag":            buildTag,
-			"NameToJSKeyCodes":    nameToJSKeyCodes,
-			"KeyCodeToNameEdge":   keyCodeToNameEdge,
-			"Codes":               codes,
-			"KeyNames":            names,
-			"LastKeyName":         names[len(names)-1],
-			"KeyNamesWithoutMods": namesWithoutMods,
-			"NameToGLFWKeys":      nameToGLFWKeys,
+		if err := tmpl.Execute(f, struct {
+			License                   string
+			DoNotEdit                 string
+			BuildTag                  string
+			NameToJSKeyCode           map[string]string
+			KeyCodeToNameEdge         map[int]string
+			EbitenKeyNames            []string
+			EbitenKeyNamesWithoutMods []string
+			DriverKeyNames            []string
+			NameToGLFWKeys            map[string]glfw.Key
+		}{
+			License:                   license,
+			DoNotEdit:                 doNotEdit,
+			BuildTag:                  buildTag,
+			NameToJSKeyCode:           nameToJSKeyCode,
+			KeyCodeToNameEdge:         keyCodeToNameEdge,
+			EbitenKeyNames:            ebitenKeyNames,
+			EbitenKeyNamesWithoutMods: ebitenKeyNamesWithoutMods,
+			DriverKeyNames:            driverKeyNames,
+			NameToGLFWKeys:            nameToGLFWKeys,
 		}); err != nil {
 			log.Fatal(err)
 		}

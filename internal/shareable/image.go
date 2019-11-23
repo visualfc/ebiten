@@ -16,7 +16,7 @@ package shareable
 
 import (
 	"fmt"
-	"image"
+	"image/color"
 	"runtime"
 	"sync"
 
@@ -47,32 +47,30 @@ func min(a, b int) int {
 }
 
 func init() {
-	var once sync.Once
 	hooks.AppendHookOnBeforeUpdate(func() error {
 		backendsM.Lock()
 		defer backendsM.Unlock()
-		once.Do(func() {
-			if len(theBackends) != 0 {
-				panic("shareable: all the images must be not-shared before the game starts")
-			}
-			if graphicsDriver.HasHighPrecisionFloat() {
-				minSize = 1024
-				// Use 4096 as a maximum size whatever size the graphics driver accepts. There are
-				// not enough evidences that bigger textures works correctly.
-				maxSize = min(4096, graphicsDriver.MaxImageSize())
-			} else {
-				minSize = 512
-				maxSize = 512
-			}
-		})
+
+		resolveDeferred()
 		makeImagesShared()
 		return nil
 	})
 }
 
+func resolveDeferred() {
+	deferredM.Lock()
+	fs := deferred
+	deferred = nil
+	deferredM.Unlock()
+
+	for _, f := range fs {
+		f()
+	}
+}
+
 // MaxCountForShare represents the time duration when the image can become shared.
 //
-// This value is expoted for testing.
+// This value is exported for testing.
 const MaxCountForShare = 10
 
 func makeImagesShared() {
@@ -83,10 +81,6 @@ func makeImagesShared() {
 		}
 		delete(imagesToMakeShared, i)
 	}
-}
-
-func MakeImagesSharedForTesting() {
-	makeImagesShared()
 }
 
 type backend struct {
@@ -121,13 +115,7 @@ func (b *backend) TryAlloc(width, height int) (*packing.Node, bool) {
 		b.page.Extend()
 	}
 	s := b.page.Size()
-	newImg := restorable.NewImage(s, s)
-	oldImg := b.restorable
-	// Do not use DrawTriangles here. ReplacePixels will be called on a part of newImg later, and it looked like
-	// ReplacePixels on a part of image deletes other region that are rendered by DrawTriangles (#593, #758).
-	newImg.CopyPixels(oldImg)
-	oldImg.Dispose()
-	b.restorable = newImg
+	b.restorable = b.restorable.Extend(s, s)
 
 	n := b.page.Alloc(width, height)
 	if n == nil {
@@ -140,25 +128,37 @@ var (
 	// backendsM is a mutex for critical sections of the backend and packing.Node objects.
 	backendsM sync.Mutex
 
+	initOnce sync.Once
+
 	// theBackends is a set of actually shared images.
 	theBackends = []*backend{}
 
 	imagesToMakeShared = map[*Image]struct{}{}
+
+	deferred []func()
+
+	// deferredM is a mutext for the slice operations. This must not be used for other usages.
+	deferredM sync.Mutex
 )
 
-// isShareable reports whether the new allocation can use the shareable backends.
-//
-// isShareable retruns false before the graphics driver is available.
-// After the graphics driver is available, read-only images will be automatically on the shareable backends by
-// (*Image).makeShared().
-func isShareable() bool {
-	return minSize > 0 && maxSize > 0
+func init() {
+	// Lock the mutex before a frame begins.
+	//
+	// In each frame, restoring images and resolving images happen respectively:
+	//
+	//   [Restore -> Resolve] -> [Restore -> Resolve] -> ...
+	//
+	// Between each frame, any image operations are not permitted, or stale images would remain when restoring
+	// (#913).
+	backendsM.Lock()
 }
 
 type Image struct {
 	width    int
 	height   int
 	disposed bool
+	volatile bool
+	screen   bool
 
 	backend *backend
 
@@ -173,8 +173,6 @@ type Image struct {
 	//
 	// ReplacePixels doesn't affect this value since ReplacePixels can be done on shared images.
 	nonUpdatedCount int
-
-	neverShared bool
 }
 
 func (i *Image) moveTo(dst *Image) {
@@ -190,12 +188,6 @@ func (i *Image) isShared() bool {
 	return i.node != nil
 }
 
-func (i *Image) IsSharedForTesting() bool {
-	backendsM.Lock()
-	defer backendsM.Unlock()
-	return i.isShared()
-}
-
 func (i *Image) ensureNotShared() {
 	if i.backend == nil {
 		i.allocate(false)
@@ -206,10 +198,22 @@ func (i *Image) ensureNotShared() {
 		return
 	}
 
-	_, _, w, h := i.region()
-	newImg := restorable.NewImage(w, h)
-	vs := make([]float32, 4*graphics.VertexFloatNum)
-	graphics.PutQuadVertices(vs, i, 0, 0, w, h, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1)
+	ox, oy, w, h := i.region()
+	dx0 := float32(0)
+	dy0 := float32(0)
+	dx1 := float32(w)
+	dy1 := float32(h)
+	sx0 := float32(ox)
+	sy0 := float32(oy)
+	sx1 := float32(ox + w)
+	sy1 := float32(oy + h)
+	newImg := restorable.NewImage(w, h, i.volatile)
+	vs := []float32{
+		dx0, dy0, sx0, sy0, sx0, sy0, sx1, sy1, 1, 1, 1, 1,
+		dx1, dy0, sx1, sy0, sx0, sy0, sx1, sy1, 1, 1, 1, 1,
+		dx0, dy1, sx0, sy1, sx0, sy0, sx1, sy1, 1, 1, 1, 1,
+		dx1, dy1, sx1, sy1, sx0, sy0, sx1, sy1, 1, 1, 1, 1,
+	}
 	is := graphics.QuadIndices()
 	newImg.DrawTriangles(i.backend.restorable, vs, is, nil, driver.CompositeModeCopy, driver.FilterNearest, driver.AddressClampToZero)
 
@@ -233,7 +237,7 @@ func (i *Image) makeShared() {
 		panic("shareable: makeShared cannot be called on a non-shareable image")
 	}
 
-	newI := NewImage(i.width, i.height)
+	newI := NewImage(i.width, i.height, i.volatile)
 	pixels := make([]byte, 4*i.width*i.height)
 	for y := 0; y < i.height; y++ {
 		for x := 0; x < i.width; x++ {
@@ -254,29 +258,30 @@ func (i *Image) region() (x, y, width, height int) {
 		panic("shareable: backend must not be nil: not allocated yet?")
 	}
 	if !i.isShared() {
-		w, h := i.backend.restorable.Size()
-		return 0, 0, w, h
+		return 0, 0, i.width, i.height
 	}
 	return i.node.Region()
 }
 
-func (i *Image) Size() (width, height int) {
-	return i.width, i.height
-}
-
-// PutVertices puts the given dst with vertices that can be passed to DrawTriangles.
-func (i *Image) PutVertex(dst []float32, dx, dy, sx, sy float32, bx0, by0, bx1, by1 float32, cr, cg, cb, ca float32) {
-	if i.backend == nil {
-		i.allocate(true)
-	}
-	ox, oy, _, _ := i.region()
-	oxf, oyf := float32(ox), float32(oy)
-	i.backend.restorable.PutVertex(dst, dx, dy, sx+oxf, sy+oyf, bx0+oxf, by0+oyf, bx1+oxf, by1+oyf, cr, cg, cb, ca)
-}
-
+// DrawTriangles draws triangles with the given image.
+//
+// The vertex floats are:
+//
+//   0:  Destination X in pixels
+//   1:  Destination Y in pixels
+//   2:  Source X in pixels (the upper-left is (0, 0))
+//   3:  Source Y in pixels
+//   4:  Bounds of the source min X in pixels
+//   5:  Bounds of the source min Y in pixels
+//   6:  Bounds of the source max X in pixels
+//   7:  Bounds of the source max Y in pixels
+//   8:  Color R [0.0-1.0]
+//   9:  Color G
+//   10: Color B
+//   11: Color Y
 func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	backendsM.Lock()
-	defer backendsM.Unlock()
+	// Do not use defer for performance.
 
 	if img.disposed {
 		panic("shareable: the drawing source image must not be disposed (DrawTriangles)")
@@ -296,6 +301,18 @@ func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, 
 		panic("shareable: Image.DrawTriangles: img must be different from the receiver")
 	}
 
+	ox, oy, _, _ := img.region()
+	oxf, oyf := float32(ox), float32(oy)
+	n := len(vertices) / graphics.VertexFloatNum
+	for i := 0; i < n; i++ {
+		vertices[i*graphics.VertexFloatNum+2] += oxf
+		vertices[i*graphics.VertexFloatNum+3] += oyf
+		vertices[i*graphics.VertexFloatNum+4] += oxf
+		vertices[i*graphics.VertexFloatNum+5] += oyf
+		vertices[i*graphics.VertexFloatNum+6] += oxf
+		vertices[i*graphics.VertexFloatNum+7] += oyf
+	}
+
 	i.backend.restorable.DrawTriangles(img.backend.restorable, vertices, indices, colorm, mode, filter, address)
 
 	i.nonUpdatedCount = 0
@@ -304,20 +321,43 @@ func (i *Image) DrawTriangles(img *Image, vertices []float32, indices []uint16, 
 	if !img.isShared() && img.shareable() {
 		imagesToMakeShared[img] = struct{}{}
 	}
+
+	backendsM.Unlock()
 }
 
-// Fill fills the image with a color. This affects not only the (0, 0)-(width, height) region but also the whole
-// framebuffer region.
-func (i *Image) Fill(r, g, b, a uint8) {
+func (i *Image) Fill(clr color.RGBA) {
 	backendsM.Lock()
+	defer backendsM.Unlock()
+
+	if i.disposed {
+		panic("shareable: the drawing target image must not be disposed (Fill)")
+	}
+	if i.backend == nil {
+		if _, _, _, a := clr.RGBA(); a == 0 {
+			return
+		}
+	}
+
+	i.ensureNotShared()
+
+	// As *restorable.Image is an independent image, it is fine to fill the entire image.
+	i.backend.restorable.Fill(clr)
+
+	i.nonUpdatedCount = 0
+	delete(imagesToMakeShared, i)
+}
+
+// ClearFramebuffer clears the image with a color. This affects not only the (0, 0)-(width, height) region but also
+// the whole framebuffer region.
+func (i *Image) ClearFramebuffer() {
+	backendsM.Lock()
+	defer backendsM.Unlock()
 	if i.disposed {
 		panic("shareable: the drawing target image must not be disposed (Fill)")
 	}
 	i.ensureNotShared()
 
-	i.backend.restorable.Fill(r, g, b, a)
-
-	backendsM.Unlock()
+	i.backend.restorable.Clear()
 }
 
 func (i *Image) ReplacePixels(p []byte) {
@@ -348,8 +388,9 @@ func (i *Image) replacePixels(p []byte) {
 
 func (i *Image) At(x, y int) (byte, byte, byte, byte) {
 	backendsM.Lock()
-	defer backendsM.Unlock()
-	return i.at(x, y)
+	r, g, b, a := i.at(x, y)
+	backendsM.Unlock()
+	return r, g, b, a
 }
 
 func (i *Image) at(x, y int) (byte, byte, byte, byte) {
@@ -365,10 +406,18 @@ func (i *Image) at(x, y int) (byte, byte, byte, byte) {
 	return i.backend.restorable.At(x+ox, y+oy)
 }
 
-func (i *Image) Dispose() {
-	backendsM.Lock()
-	defer backendsM.Unlock()
-	i.dispose(true)
+// MarkDisposed marks the image as disposed. The actual operation is deferred.
+// MarkDisposed can be called from finalizers.
+//
+// A function from finalizer must not be blocked, but disposing operation can be blocked.
+// Defer this operation until it becomes safe. (#913)
+func (i *Image) MarkDisposed() {
+	// deferred doesn't have to be, and should not be protected by a mutex.
+	deferredM.Lock()
+	deferred = append(deferred, func() {
+		i.dispose(true)
+	})
+	deferredM.Unlock()
 }
 
 func (i *Image) dispose(markDisposed bool) {
@@ -400,9 +449,7 @@ func (i *Image) dispose(markDisposed bool) {
 	i.backend.page.Free(i.node)
 	if !i.backend.page.IsEmpty() {
 		// As this part can be reused, this should be cleared explicitly.
-		x, y, w, h := i.region()
-		// TODO: Now nil cannot be used here (see the test result). Fix this.
-		i.backend.restorable.ReplacePixels(make([]byte, 4*w*h), x, y, w, h)
+		i.backend.restorable.ClearPixels(i.region())
 		return
 	}
 
@@ -420,29 +467,23 @@ func (i *Image) dispose(markDisposed bool) {
 	theBackends = append(theBackends[:index], theBackends[index+1:]...)
 }
 
-func (i *Image) IsVolatile() bool {
-	backendsM.Lock()
-	defer backendsM.Unlock()
-	if i.backend == nil {
-		// Not allocated yet. Only non-volatile images can do lazy allocation so far.
-		return false
-	}
-	return i.backend.restorable.IsVolatile()
-}
-
-func NewImage(width, height int) *Image {
-	// Actual allocation is done lazily.
+func NewImage(width, height int, volatile bool) *Image {
+	// Actual allocation is done lazily, and the lock is not needed.
 	return &Image{
-		width:  width,
-		height: height,
+		width:    width,
+		height:   height,
+		volatile: volatile,
 	}
 }
 
 func (i *Image) shareable() bool {
-	if !isShareable() {
+	if minSize == 0 || maxSize == 0 {
+		panic("shareable: minSize or maxSize must be initialized")
+	}
+	if i.volatile {
 		return false
 	}
-	if i.neverShared {
+	if i.screen {
 		return false
 	}
 	return i.width <= maxSize && i.height <= maxSize
@@ -453,11 +494,19 @@ func (i *Image) allocate(shareable bool) {
 		panic("shareable: the image is already allocated")
 	}
 
+	runtime.SetFinalizer(i, (*Image).MarkDisposed)
+
+	if i.screen {
+		i.backend = &backend{
+			restorable: restorable.NewScreenFramebufferImage(i.width, i.height),
+		}
+		return
+	}
+
 	if !shareable || !i.shareable() {
 		i.backend = &backend{
-			restorable: restorable.NewImage(i.width, i.height),
+			restorable: restorable.NewImage(i.width, i.height, i.volatile),
 		}
-		runtime.SetFinalizer(i, (*Image).Dispose)
 		return
 	}
 
@@ -465,7 +514,6 @@ func (i *Image) allocate(shareable bool) {
 		if n, ok := b.TryAlloc(i.width, i.height); ok {
 			i.backend = b
 			i.node = n
-			runtime.SetFinalizer(i, (*Image).Dispose)
 			return
 		}
 	}
@@ -478,7 +526,7 @@ func (i *Image) allocate(shareable bool) {
 	}
 
 	b := &backend{
-		restorable: restorable.NewImage(size, size),
+		restorable: restorable.NewImage(size, size, i.volatile),
 		page:       packing.NewPage(size, maxSize),
 	}
 	theBackends = append(theBackends, b)
@@ -489,61 +537,63 @@ func (i *Image) allocate(shareable bool) {
 	}
 	i.backend = b
 	i.node = n
-	runtime.SetFinalizer(i, (*Image).Dispose)
 }
 
-func (i *Image) MakeVolatile() {
+func (i *Image) Dump(path string) error {
 	backendsM.Lock()
 	defer backendsM.Unlock()
 
-	i.ensureNotShared()
-	i.backend.restorable.MakeVolatile()
-	i.neverShared = true
+	return i.backend.restorable.Dump(path)
 }
 
 func NewScreenFramebufferImage(width, height int) *Image {
-	backendsM.Lock()
-	defer backendsM.Unlock()
-
-	r := restorable.NewScreenFramebufferImage(width, height)
+	// Actual allocation is done lazily.
 	i := &Image{
 		width:  width,
 		height: height,
-		backend: &backend{
-			restorable: r,
-		},
-		neverShared: true,
+		screen: true,
 	}
-	runtime.SetFinalizer(i, (*Image).Dispose)
 	return i
 }
 
-func InitializeGraphicsDriverState() error {
+func EndFrame() error {
 	backendsM.Lock()
-	defer backendsM.Unlock()
-	return restorable.InitializeGraphicsDriverState()
-}
 
-func ResolveStaleImages() {
-	backendsM.Lock()
-	defer backendsM.Unlock()
 	restorable.ResolveStaleImages()
+	return restorable.Error()
 }
 
-func RestoreIfNeeded() error {
-	backendsM.Lock()
+func BeginFrame() error {
 	defer backendsM.Unlock()
+
+	var err error
+	initOnce.Do(func() {
+		err = restorable.InitializeGraphicsDriverState()
+		if err != nil {
+			return
+		}
+		if len(theBackends) != 0 {
+			panic("shareable: all the images must be not-shared before the game starts")
+		}
+		if graphicsDriver.HasHighPrecisionFloat() {
+			minSize = 1024
+			// Use 4096 as a maximum size whatever size the graphics driver accepts. There are
+			// not enough evidences that bigger textures works correctly.
+			maxSize = min(4096, graphicsDriver.MaxImageSize())
+		} else {
+			minSize = 512
+			maxSize = 512
+		}
+	})
+	if err != nil {
+		return err
+	}
+
 	return restorable.RestoreIfNeeded()
 }
 
-func Images() []image.Image {
+func DumpImages(dir string) error {
 	backendsM.Lock()
 	defer backendsM.Unlock()
-	return restorable.Images()
-}
-
-func Error() error {
-	backendsM.Lock()
-	defer backendsM.Unlock()
-	return restorable.Error()
+	return restorable.DumpImages(dir)
 }

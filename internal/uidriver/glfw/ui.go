@@ -23,6 +23,7 @@ import (
 	"context"
 	"image"
 	"math"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -68,7 +69,7 @@ type UserInterface struct {
 	input    Input
 
 	t *thread.Thread
-	m sync.Mutex
+	m sync.RWMutex
 }
 
 const (
@@ -117,6 +118,11 @@ func initialize() error {
 	if err != nil {
 		return err
 	}
+	if w == nil {
+		// This can happen on Windows Remote Desktop (#903).
+		panic("ui: glfw.CreateWindow must not return nil")
+	}
+
 	// TODO: Fix this hack. currentMonitorImpl now requires u.window on POSIX.
 	theUI.window = w
 	theUI.initMonitor = theUI.currentMonitorFromPosition()
@@ -173,9 +179,9 @@ func getCachedMonitor(wx, wy int) (*cachedMonitor, bool) {
 }
 
 func (u *UserInterface) isRunning() bool {
-	u.m.Lock()
+	u.m.RLock()
 	v := u.running
-	u.m.Unlock()
+	u.m.RUnlock()
 	return v
 }
 
@@ -186,9 +192,9 @@ func (u *UserInterface) setRunning(running bool) {
 }
 
 func (u *UserInterface) isInitFullscreen() bool {
-	u.m.Lock()
+	u.m.RLock()
 	v := u.initFullscreen
-	u.m.Unlock()
+	u.m.RUnlock()
 	return v
 }
 
@@ -199,9 +205,9 @@ func (u *UserInterface) setInitFullscreen(initFullscreen bool) {
 }
 
 func (u *UserInterface) isInitCursorVisible() bool {
-	u.m.Lock()
+	u.m.RLock()
 	v := u.initCursorVisible
-	u.m.Unlock()
+	u.m.RUnlock()
 	return v
 }
 
@@ -212,9 +218,9 @@ func (u *UserInterface) setInitCursorVisible(visible bool) {
 }
 
 func (u *UserInterface) isInitWindowDecorated() bool {
-	u.m.Lock()
+	u.m.RLock()
 	v := u.initWindowDecorated
-	u.m.Unlock()
+	u.m.RUnlock()
 	return v
 }
 
@@ -225,9 +231,9 @@ func (u *UserInterface) setInitWindowDecorated(decorated bool) {
 }
 
 func (u *UserInterface) isRunnableInBackground() bool {
-	u.m.Lock()
+	u.m.RLock()
 	v := u.runnableInBackground
-	u.m.Unlock()
+	u.m.RUnlock()
 	return v
 }
 
@@ -238,9 +244,9 @@ func (u *UserInterface) setRunnableInBackground(runnableInBackground bool) {
 }
 
 func (u *UserInterface) isInitWindowResizable() bool {
-	u.m.Lock()
+	u.m.RLock()
 	v := u.initWindowResizable
-	u.m.Unlock()
+	u.m.RUnlock()
 	return v
 }
 
@@ -251,9 +257,9 @@ func (u *UserInterface) setInitWindowResizable(resizable bool) {
 }
 
 func (u *UserInterface) getInitIconImages() []image.Image {
-	u.m.Lock()
+	u.m.RLock()
 	i := u.initIconImages
-	u.m.Unlock()
+	u.m.RUnlock()
 	return i
 }
 
@@ -369,9 +375,9 @@ func (u *UserInterface) SetVsyncEnabled(enabled bool) {
 }
 
 func (u *UserInterface) IsVsyncEnabled() bool {
-	u.m.Lock()
+	u.m.RLock()
 	r := u.vsync
-	u.m.Unlock()
+	u.m.RUnlock()
 	return r
 }
 
@@ -581,7 +587,7 @@ func (u *UserInterface) RunWithoutMainLoop(width, height int, scale float64, tit
 }
 
 func (u *UserInterface) run(width, height int, scale float64, title string, context driver.UIContext) error {
-	_ = u.t.Call(func() error {
+	if err := u.t.Call(func() error {
 		if u.graphics.IsGL() {
 			glfw.WindowHint(glfw.ContextVersionMajor, 2)
 			glfw.WindowHint(glfw.ContextVersionMinor, 1)
@@ -601,6 +607,11 @@ func (u *UserInterface) run(width, height int, scale float64, title string, cont
 			resizable = glfw.True
 		}
 		glfw.WindowHint(glfw.Resizable, resizable)
+
+		// Set the window visible explicitly or the application freezes on Wayland (#974).
+		if os.Getenv("WAYLAND_DISPLAY") != "" {
+			glfw.WindowHint(glfw.Visible, glfw.True)
+		}
 
 		// As a start, create a window with temporary size to create OpenGL context thread.
 		window, err := glfw.CreateWindow(16, 16, "", nil, nil)
@@ -677,7 +688,9 @@ func (u *UserInterface) run(width, height int, scale float64, title string, cont
 			u.reqHeight = h
 		})
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 
 	var w uintptr
 	_ = u.t.Call(func() error {
@@ -813,13 +826,27 @@ func (u *UserInterface) loop(context driver.UIContext) error {
 		})
 	}()
 	for {
+		var unfocused bool
+
+		// On Windows, the focusing state might be always false (#987).
+		// On Windows, even if a window is in another workspace, vsync seems to work.
+		// Then let's assume the window is alwasy 'focused' as a workaround.
+		if runtime.GOOS != "windows" {
+			unfocused = u.window.GetAttrib(glfw.Focused) == glfw.False
+		}
+
+		var t1, t2 time.Time
+
+		if unfocused {
+			t1 = time.Now()
+		}
 		if err := u.update(context); err != nil {
 			return err
 		}
 
-		u.m.Lock()
+		u.m.RLock()
 		vsync := u.vsync
-		u.m.Unlock()
+		u.m.RUnlock()
 
 		_ = u.t.Call(func() error {
 			if !vsync {
@@ -829,6 +856,19 @@ func (u *UserInterface) loop(context driver.UIContext) error {
 			u.swapBuffers()
 			return nil
 		})
+		if unfocused {
+			t2 = time.Now()
+		}
+
+		// When a window is not focused, SwapBuffers might return immediately and CPU might be busy.
+		// Mitigate this by sleeping (#982).
+		if unfocused {
+			d := t2.Sub(t1)
+			const wait = time.Second / 60
+			if d < wait {
+				time.Sleep(wait - d)
+			}
+		}
 	}
 }
 

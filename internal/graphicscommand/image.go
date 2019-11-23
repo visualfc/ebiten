@@ -15,9 +15,15 @@
 package graphicscommand
 
 import (
+	"fmt"
+	"image"
+	"os"
+	"strings"
+
 	"github.com/hajimehoshi/ebiten/internal/affine"
 	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
+	"github.com/hajimehoshi/ebiten/internal/png"
 )
 
 type lastCommand int
@@ -37,7 +43,17 @@ type Image struct {
 	internalWidth  int
 	internalHeight int
 	screen         bool
-	lastCommand    lastCommand
+	id             int
+
+	lastCommand lastCommand
+}
+
+var nextID = 1
+
+func genNextID() int {
+	id := nextID
+	nextID++
+	return id
 }
 
 // NewImage returns a new image.
@@ -45,10 +61,9 @@ type Image struct {
 // Note that the image is not initialized yet.
 func NewImage(width, height int) *Image {
 	i := &Image{
-		width:          width,
-		height:         height,
-		internalWidth:  graphics.InternalImageSize(width),
-		internalHeight: graphics.InternalImageSize(height),
+		width:  width,
+		height: height,
+		id:     genNextID(),
 	}
 	c := &newImageCommand{
 		result: i,
@@ -61,11 +76,10 @@ func NewImage(width, height int) *Image {
 
 func NewScreenFramebufferImage(width, height int) *Image {
 	i := &Image{
-		width:          width,
-		height:         height,
-		internalWidth:  graphics.InternalImageSize(width),
-		internalHeight: graphics.InternalImageSize(height),
-		screen:         true,
+		width:  width,
+		height: height,
+		screen: true,
+		id:     genNextID(),
 	}
 	c := &newScreenFramebufferImageCommand{
 		result: i,
@@ -83,15 +97,32 @@ func (i *Image) Dispose() {
 	theCommandQueue.Enqueue(c)
 }
 
-func (i *Image) Size() (int, int) {
-	// i.image can be nil before initializing.
-	return i.width, i.height
-}
-
 func (i *Image) InternalSize() (int, int) {
+	if i.internalWidth == 0 {
+		i.internalWidth = graphics.InternalImageSize(i.width)
+	}
+	if i.internalHeight == 0 {
+		i.internalHeight = graphics.InternalImageSize(i.height)
+	}
 	return i.internalWidth, i.internalHeight
 }
 
+// DrawTriangles draws triangles with the given image.
+//
+// The vertex floats are:
+//
+//   0:  Destination X in pixels
+//   1:  Destination Y in pixels
+//   2:  Source X in pixels (not texels!)
+//   3:  Source Y in pixels
+//   4:  Bounds of the source min X in pixels
+//   5:  Bounds of the source min Y in pixels
+//   6:  Bounds of the source max X in pixels
+//   7:  Bounds of the source max Y in pixels
+//   8:  Color R [0.0-1.0]
+//   9:  Color G
+//   10: Color B
+//   11: Color Y
 func (i *Image) DrawTriangles(src *Image, vertices []float32, indices []uint16, clr *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	if src.screen {
 		panic("graphicscommand: the screen image cannot be the rendering source")
@@ -145,24 +176,6 @@ func (i *Image) ReplacePixels(p []byte, x, y, width, height int) {
 	i.lastCommand = lastCommandReplacePixels
 }
 
-// CopyPixels is basically same as Pixels and ReplacePixels, but reading pixels from GPU is done lazily.
-func (i *Image) CopyPixels(src *Image) {
-	if i.lastCommand == lastCommandDrawTriangles {
-		if i.width != src.width || i.height != src.height {
-			panic("graphicscommand: Copy for a part after DrawTriangles is forbidden")
-		}
-	}
-
-	c := &copyPixelsCommand{
-		dst: i,
-		src: src,
-	}
-	theCommandQueue.Enqueue(c)
-
-	// The execution is basically same as replacing pixels.
-	i.lastCommand = lastCommandReplacePixels
-}
-
 func (i *Image) IsInvalidated() bool {
 	if i.screen {
 		// The screen image might not have a texture, and in this case it is impossible to detect whether
@@ -175,4 +188,31 @@ func (i *Image) IsInvalidated() bool {
 		return false
 	}
 	return i.image.IsInvalidated()
+}
+
+// Dump dumps the image to the specified path.
+// In the path, '*' is replaced with the image's ID.
+//
+// This is for testing usage.
+func (i *Image) Dump(path string) error {
+	// Screen image cannot be dumped.
+	if i.screen {
+		return nil
+	}
+
+	path = strings.ReplaceAll(path, "*", fmt.Sprintf("%d", i.id))
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := png.Encode(f, &image.RGBA{
+		Pix:    i.Pixels(),
+		Stride: 4 * i.width,
+		Rect:   image.Rect(0, 0, i.width, i.height),
+	}); err != nil {
+		return err
+	}
+	return nil
 }

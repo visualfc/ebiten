@@ -18,7 +18,9 @@ package mobile
 
 import (
 	"context"
+	"fmt"
 	"image"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -32,12 +34,13 @@ import (
 	"github.com/hajimehoshi/ebiten/internal/devicescale"
 	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/opengl"
+	"github.com/hajimehoshi/ebiten/internal/thread"
 )
 
 var (
 	glContextCh = make(chan gl.Context)
 
-	// renderCh recieves when updating starts.
+	// renderCh receives when updating starts.
 	renderCh = make(chan struct{})
 
 	// renderEndCh receives when updating finishes.
@@ -59,7 +62,14 @@ func (u *UserInterface) Render() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-renderEndCh
-		cancel()
+		if u.t != nil {
+			u.t.Call(func() error {
+				cancel()
+				return nil
+			})
+		} else {
+			cancel()
+		}
 	}()
 
 	if u.graphics.IsGL() {
@@ -77,9 +87,9 @@ func (u *UserInterface) Render() {
 			}
 		}
 		return
+	} else {
+		u.t.Loop(ctx)
 	}
-
-	// TODO: Create and run the thread loop like the GLFW driver does.
 }
 
 type UserInterface struct {
@@ -97,24 +107,14 @@ type UserInterface struct {
 
 	input Input
 
+	t        *thread.Thread
 	glWorker gl.Worker
 
 	m sync.RWMutex
 }
 
-var (
-	deviceScaleVal float64
-	deviceScaleM   sync.Mutex
-)
-
-func getDeviceScale() float64 {
-	deviceScaleM.Lock()
-	defer deviceScaleM.Unlock()
-
-	if deviceScaleVal == 0 {
-		deviceScaleVal = devicescale.GetAt(0, 0)
-	}
-	return deviceScaleVal
+func deviceScale() float64 {
+	return devicescale.GetAt(0, 0)
 }
 
 // appMain is the main routine for gomobile-build mode.
@@ -150,7 +150,7 @@ func (u *UserInterface) appMain(a app.App) {
 		case touch.Event:
 			switch e.Type {
 			case touch.TypeBegin, touch.TypeMove:
-				s := getDeviceScale()
+				s := deviceScale()
 				x, y := float64(e.X)/s, float64(e.Y)/s
 				// TODO: Is it ok to cast from int64 to int here?
 				touches[e.Sequence] = &Touch{
@@ -192,7 +192,17 @@ func (u *UserInterface) RunWithoutMainLoop(width, height int, scale float64, tit
 	return ch
 }
 
-func (u *UserInterface) run(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics, mainloop bool) error {
+func (u *UserInterface) run(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics, mainloop bool) (err error) {
+	// Convert the panic to a regular error so that Java/Objective-C layer can treat this easily e.g., for
+	// Crashlytics. A panic is treated as SIGABRT, and there is no way to handle this on Java/Objective-C layer
+	// unfortunately.
+	// TODO: Panic on other goroutines cannot be handled here.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v\n%q", r, string(debug.Stack()))
+		}
+	}()
+
 	u.m.Lock()
 	u.width = width
 	u.height = height
@@ -210,6 +220,9 @@ func (u *UserInterface) run(width, height int, scale float64, title string, cont
 			ctx, u.glWorker = gl.NewContext()
 		}
 		graphics.(*opengl.Driver).SetMobileGLContext(ctx)
+	} else {
+		u.t = thread.New()
+		graphics.SetThread(u.t)
 	}
 
 	// Force to set the screen size
@@ -230,7 +243,7 @@ func (u *UserInterface) updateSize(context driver.UIContext) {
 	if sizeChanged {
 		width = u.width
 		height = u.height
-		actualScale = u.scaleImpl() * getDeviceScale()
+		actualScale = u.scaleImpl() * deviceScale()
 	}
 	u.sizeChanged = false
 	u.m.Unlock()
@@ -243,7 +256,7 @@ func (u *UserInterface) updateSize(context driver.UIContext) {
 
 func (u *UserInterface) ActualScale() float64 {
 	u.m.Lock()
-	s := u.scaleImpl() * getDeviceScale()
+	s := u.scaleImpl() * deviceScale()
 	u.m.Unlock()
 	return s
 }
@@ -257,19 +270,16 @@ func (u *UserInterface) scaleImpl() float64 {
 }
 
 func (u *UserInterface) update(context driver.UIContext) error {
-render:
-	for {
-		t := time.NewTimer(500 * time.Millisecond)
-		defer t.Stop()
+	t := time.NewTimer(500 * time.Millisecond)
+	defer t.Stop()
 
-		select {
-		case <-renderCh:
-			break render
-		case <-t.C:
-			context.SuspendAudio()
-			continue
-		}
+	select {
+	case <-renderCh:
+	case <-t.C:
+		context.SuspendAudio()
+		<-renderCh
 	}
+
 	context.ResumeAudio()
 
 	defer func() {
@@ -345,7 +355,7 @@ func (u *UserInterface) updateFullscreenScaleIfNeeded() {
 	if scale > scaleY {
 		scale = scaleY
 	}
-	u.fullscreenScale = scale / getDeviceScale()
+	u.fullscreenScale = scale / deviceScale()
 	u.sizeChanged = true
 }
 
@@ -360,18 +370,16 @@ func (u *UserInterface) screenPaddingImpl() (x0, y0, x1, y1 float64) {
 	if u.fullscreenScale == 0 {
 		return 0, 0, 0, 0
 	}
-	s := u.fullscreenScale * getDeviceScale()
+	s := u.fullscreenScale * deviceScale()
 	ox := (float64(u.fullscreenWidthPx) - float64(u.width)*s) / 2
 	oy := (float64(u.fullscreenHeightPx) - float64(u.height)*s) / 2
 	return ox, oy, ox, oy
 }
 
 func (u *UserInterface) adjustPosition(x, y int) (int, int) {
-	u.m.Lock()
 	ox, oy, _, _ := u.screenPaddingImpl()
 	s := u.scaleImpl()
-	as := s * getDeviceScale()
-	u.m.Unlock()
+	as := s * deviceScale()
 	return int(float64(x)/s - ox/as), int(float64(y)/s - oy/as)
 }
 
@@ -432,7 +440,7 @@ func (u *UserInterface) SetVsyncEnabled(enabled bool) {
 }
 
 func (u *UserInterface) DeviceScaleFactor() float64 {
-	return getDeviceScale()
+	return deviceScale()
 }
 
 func (u *UserInterface) Input() driver.Input {

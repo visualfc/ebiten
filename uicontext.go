@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/hajimehoshi/ebiten/internal/buffered"
 	"github.com/hajimehoshi/ebiten/internal/clock"
 	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphicscommand"
@@ -43,7 +44,6 @@ type uiContext struct {
 	screenWidth  int
 	screenHeight int
 	screenScale  float64
-	initialized  bool
 	offsetX      float64
 	offsetY      float64
 }
@@ -57,32 +57,19 @@ func (c *uiContext) SetSize(screenWidth, screenHeight int, screenScale float64) 
 	if c.offscreen != nil {
 		_ = c.offscreen.Dispose()
 	}
-	c.offscreen, _ = NewImage(screenWidth, screenHeight, FilterDefault)
-	c.offscreen.makeVolatile()
+
+	c.offscreen = newImage(screenWidth, screenHeight, FilterDefault, true)
 
 	// Round up the screensize not to cause glitches e.g. on Xperia (#622)
 	w := int(math.Ceil(float64(screenWidth) * screenScale))
 	h := int(math.Ceil(float64(screenHeight) * screenScale))
 	px0, py0, px1, py1 := uiDriver().ScreenPadding()
-	c.screen = newImageWithScreenFramebuffer(w+int(math.Ceil(px0+px1)), h+int(math.Ceil(py0+py1)))
+	c.screen = newScreenFramebufferImage(w+int(math.Ceil(px0+px1)), h+int(math.Ceil(py0+py1)))
 	c.screenWidth = w
 	c.screenHeight = h
 
 	c.offsetX = px0
 	c.offsetY = py0
-}
-
-func (c *uiContext) initializeIfNeeded() error {
-	if !c.initialized {
-		if err := shareable.InitializeGraphicsDriverState(); err != nil {
-			return err
-		}
-		c.initialized = true
-	}
-	if err := c.restoreIfNeeded(); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (c *uiContext) Update(afterFrameUpdate func()) error {
@@ -91,9 +78,10 @@ func (c *uiContext) Update(afterFrameUpdate func()) error {
 
 	// TODO: If updateCount is 0 and vsync is disabled, swapping buffers can be skipped.
 
-	if err := c.initializeIfNeeded(); err != nil {
+	if err := buffered.BeginFrame(); err != nil {
 		return err
 	}
+
 	for i := 0; i < updateCount; i++ {
 		c.offscreen.Clear()
 		// Mipmap images should be disposed by fill.
@@ -111,7 +99,7 @@ func (c *uiContext) Update(afterFrameUpdate func()) error {
 	}
 
 	// This clear is needed for fullscreen mode or some mobile platforms (#622).
-	c.screen.Clear()
+	c.screen.mipmap.clearFramebuffer()
 
 	op := &DrawImageOptions{}
 
@@ -139,16 +127,7 @@ func (c *uiContext) Update(afterFrameUpdate func()) error {
 	}
 	_ = c.screen.DrawImage(c.offscreen, op)
 
-	shareable.ResolveStaleImages()
-
-	if err := shareable.Error(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *uiContext) restoreIfNeeded() error {
-	if err := shareable.RestoreIfNeeded(); err != nil {
+	if err := buffered.EndFrame(); err != nil {
 		return err
 	}
 	return nil

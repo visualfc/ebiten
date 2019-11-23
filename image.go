@@ -18,12 +18,9 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"math"
-	"sync/atomic"
 
 	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
-	"github.com/hajimehoshi/ebiten/internal/shareable"
 )
 
 // Image represents a rectangle set of pixels.
@@ -42,8 +39,6 @@ type Image struct {
 
 	bounds   image.Rectangle
 	original *Image
-
-	pendingPixels []byte
 
 	filter Filter
 }
@@ -85,6 +80,7 @@ func (i *Image) Clear() error {
 // Fill always returns nil as of 1.5.0-alpha.
 func (i *Image) Fill(clr color.Color) error {
 	i.copyCheck()
+
 	if i.isDisposed() {
 		return nil
 	}
@@ -94,20 +90,8 @@ func (i *Image) Fill(clr color.Color) error {
 		panic("ebiten: render to a subimage is not implemented (Fill)")
 	}
 
-	i.resolvePendingPixels(false)
-
-	r16, g16, b16, a16 := clr.RGBA()
-	r, g, b, a := uint8(r16>>8), uint8(g16>>8), uint8(b16>>8), uint8(a16>>8)
-	i.mipmap.original().Fill(r, g, b, a)
-	i.disposeMipmaps()
+	i.mipmap.fill(color.RGBAModel.Convert(clr).(color.RGBA))
 	return nil
-}
-
-func (i *Image) disposeMipmaps() {
-	if i.isDisposed() {
-		panic("ebiten: the image is already disposed at disposeMipmap")
-	}
-	i.mipmap.disposeMipmaps()
 }
 
 // DrawImage draws the given image on the image i.
@@ -144,11 +128,12 @@ func (i *Image) disposeMipmaps() {
 // case is when you use an offscreen as a render source. An offscreen doesn't
 // share the texture atlas with high probability.
 //
-// For more performance tips, see https://github.com/hajimehoshi/ebiten/wiki/Performance-Tips.
+// For more performance tips, see https://ebiten.org/performancetips.html
 //
 // DrawImage always returns nil as of 1.5.0-alpha.
 func (i *Image) DrawImage(img *Image, options *DrawImageOptions) error {
 	i.copyCheck()
+
 	if img.isDisposed() {
 		panic("ebiten: the given image to DrawImage must not be disposed")
 	}
@@ -160,9 +145,6 @@ func (i *Image) DrawImage(img *Image, options *DrawImageOptions) error {
 	if i.isSubImage() {
 		panic("ebiten: render to a subimage is not implemented (drawImage)")
 	}
-
-	img.resolvePendingPixels(true)
-	i.resolvePendingPixels(true)
 
 	// Calculate vertices before locking because the user can do anything in
 	// options.ImageParts interface without deadlock (e.g. Call Image functions).
@@ -217,73 +199,7 @@ func (i *Image) DrawImage(img *Image, options *DrawImageOptions) error {
 		filter = driver.Filter(img.filter)
 	}
 
-	a, b, c, d, tx, ty := geom.elements()
-
-	level := 0
-	if filter == driver.FilterLinear && !img.mipmap.original().IsVolatile() {
-		det := geom.det()
-		if det == 0 {
-			return nil
-		}
-		if math.IsNaN(float64(det)) {
-			return nil
-		}
-		level = mipmapLevel(det)
-		if level < 0 {
-			panic(fmt.Sprintf("ebiten: level must be >= 0 but %d", level))
-		}
-
-		// If the image can be scaled into 0 size, adjust the level. (#839)
-		w, h := bounds.Dx(), bounds.Dy()
-		for level >= 0 {
-			s := 1 << uint(level)
-			if w/s == 0 || h/s == 0 {
-				level--
-				continue
-			}
-			break
-		}
-
-		if level < 0 {
-			// As the render source is too small, nothing is rendered.
-			return nil
-		}
-	}
-	if level > 6 {
-		level = 6
-	}
-
-	// TODO: Add (*mipmap).drawImage and move the below code.
-	colorm := options.ColorM.impl
-	cr, cg, cb, ca := float32(1), float32(1), float32(1), float32(1)
-	if colorm.ScaleOnly() {
-		body, _ := colorm.UnsafeElements()
-		cr = body[0]
-		cg = body[5]
-		cb = body[10]
-		ca = body[15]
-		colorm = nil
-	}
-
-	if level == 0 {
-		src := img.mipmap.original()
-		vs := vertexSlice(4)
-		graphics.PutQuadVertices(vs, src, bounds.Min.X, bounds.Min.Y, bounds.Max.X, bounds.Max.Y, a, b, c, d, tx, ty, cr, cg, cb, ca)
-		is := graphics.QuadIndices()
-		i.mipmap.original().DrawTriangles(src, vs, is, colorm, mode, filter, driver.AddressClampToZero)
-	} else if src := img.mipmap.level(bounds, level); src != nil {
-		w, h := src.Size()
-		s := 1 << uint(level)
-		a *= float32(s)
-		b *= float32(s)
-		c *= float32(s)
-		d *= float32(s)
-		vs := vertexSlice(4)
-		graphics.PutQuadVertices(vs, src, 0, 0, w, h, a, b, c, d, tx, ty, cr, cg, cb, ca)
-		is := graphics.QuadIndices()
-		i.mipmap.original().DrawTriangles(src, vs, is, colorm, mode, filter, driver.AddressClampToZero)
-	}
-	i.disposeMipmaps()
+	i.mipmap.drawImage(img.mipmap, img.Bounds(), geom, options.ColorM.impl, mode, filter)
 	return nil
 }
 
@@ -361,6 +277,7 @@ const MaxIndicesNum = graphics.IndicesNum
 // Note that this API is experimental.
 func (i *Image) DrawTriangles(vertices []Vertex, indices []uint16, img *Image, options *DrawTrianglesOptions) {
 	i.copyCheck()
+
 	if i.isDisposed() {
 		return
 	}
@@ -368,9 +285,6 @@ func (i *Image) DrawTriangles(vertices []Vertex, indices []uint16, img *Image, o
 	if i.isSubImage() {
 		panic("ebiten: render to a subimage is not implemented (DrawTriangles)")
 	}
-
-	img.resolvePendingPixels(true)
-	i.resolvePendingPixels(true)
 
 	if len(indices)%3 != 0 {
 		panic("ebiten: len(indices) % 3 must be 0")
@@ -393,17 +307,7 @@ func (i *Image) DrawTriangles(vertices []Vertex, indices []uint16, img *Image, o
 		filter = driver.Filter(img.filter)
 	}
 
-	vs := vertexSlice(len(vertices))
-	src := img.mipmap.original()
-	r := img.Bounds()
-	for idx, v := range vertices {
-		src.PutVertex(vs[idx*graphics.VertexFloatNum:(idx+1)*graphics.VertexFloatNum],
-			float32(v.DstX), float32(v.DstY), v.SrcX, v.SrcY,
-			float32(r.Min.X), float32(r.Min.Y), float32(r.Max.X), float32(r.Max.Y),
-			v.ColorR, v.ColorG, v.ColorB, v.ColorA)
-	}
-	i.mipmap.original().DrawTriangles(img.mipmap.original(), vs, indices, options.ColorM.impl, mode, filter, driver.Address(options.Address))
-	i.disposeMipmaps()
+	i.mipmap.drawTriangles(img.mipmap, img.Bounds(), vertices, indices, options.ColorM.impl, mode, filter, driver.Address(options.Address))
 }
 
 // SubImage returns an image representing the portion of the image p visible through r. The returned value shares pixels with the original image.
@@ -448,7 +352,7 @@ func (i *Image) Bounds() image.Rectangle {
 		panic("ebiten: the image is already disposed")
 	}
 	if !i.isSubImage() {
-		w, h := i.mipmap.original().Size()
+		w, h := i.mipmap.size()
 		return image.Rect(0, 0, w, h)
 	}
 	return i.bounds
@@ -470,18 +374,13 @@ func (i *Image) ColorModel() color.Model {
 //
 // At can't be called outside the main loop (ebiten.Run's updating function) starts (as of version 1.4.0-alpha).
 func (i *Image) At(x, y int) color.Color {
-	if atomic.LoadInt32(&isRunning) == 0 {
-		panic("ebiten: (*Image).At is not available outside the main loop so far")
-	}
-
 	if i.isDisposed() {
 		return color.RGBA{}
 	}
 	if i.isSubImage() && !image.Pt(x, y).In(i.bounds) {
 		return color.RGBA{}
 	}
-	i.resolvePendingPixels(true)
-	r, g, b, a := i.mipmap.original().At(x, y)
+	r, g, b, a := i.mipmap.at(x, y)
 	return color.RGBA{r, g, b, a}
 }
 
@@ -489,76 +388,36 @@ func (i *Image) At(x, y int) color.Color {
 //
 // Set loads pixels from GPU to system memory if necessary, which means that Set can be slow.
 //
-// Set can't be called outside the main loop (ebiten.Run's updating function) starts.
+// In the current implementation, successive calls of Set invokes loading pixels at most once, so this is efficient.
 //
 // If the image is disposed, Set does nothing.
-func (img *Image) Set(x, y int, clr color.Color) {
-	if atomic.LoadInt32(&isRunning) == 0 {
-		panic("ebiten: (*Image).Set is not available outside the main loop so far")
-	}
-
-	img.copyCheck()
-	if img.isDisposed() {
+func (i *Image) Set(x, y int, clr color.Color) {
+	i.copyCheck()
+	if i.isDisposed() {
 		return
 	}
-	if img.isSubImage() && !image.Pt(x, y).In(img.bounds) {
+	if !image.Pt(x, y).In(i.Bounds()) {
 		return
 	}
-	if img.isSubImage() {
-		img = img.original
-	}
-
-	w, h := img.Size()
-	if img.pendingPixels == nil {
-		pix := make([]byte, 4*w*h)
-		idx := 0
-		for j := 0; j < h; j++ {
-			for i := 0; i < w; i++ {
-				r, g, b, a := img.mipmap.original().At(i, j)
-				pix[4*idx] = r
-				pix[4*idx+1] = g
-				pix[4*idx+2] = b
-				pix[4*idx+3] = a
-				idx++
-			}
-		}
-		img.pendingPixels = pix
-	}
-	r, g, b, a := clr.RGBA()
-	img.pendingPixels[4*(x+y*w)] = byte(r >> 8)
-	img.pendingPixels[4*(x+y*w)+1] = byte(g >> 8)
-	img.pendingPixels[4*(x+y*w)+2] = byte(b >> 8)
-	img.pendingPixels[4*(x+y*w)+3] = byte(a >> 8)
-}
-
-func (i *Image) resolvePendingPixels(draw bool) {
 	if i.isSubImage() {
-		i.original.resolvePendingPixels(draw)
-		return
+		i = i.original
 	}
 
-	if i.pendingPixels == nil {
-		return
-	}
-
-	if !draw {
-		i.pendingPixels = nil
-		return
-	}
-
-	i.ReplacePixels(i.pendingPixels)
-	i.pendingPixels = nil
+	r, g, b, a := clr.RGBA()
+	i.mipmap.set(x, y, byte(r>>8), byte(g>>8), byte(b>>8), byte(a>>8))
 }
 
 // Dispose disposes the image data. After disposing, most of image functions do nothing and returns meaningless values.
 //
-// Dispose is useful to save memory.
+// Calling Dispose is not mandatory. GC automatically collects internal resources that no objects refer to.
+// However, calling Dispose explicitly is helpful if memory usage matters.
 //
 // When the image is disposed, Dipose does nothing.
 //
 // Dipose always return nil as of 1.5.0-alpha.
 func (i *Image) Dispose() error {
 	i.copyCheck()
+
 	if i.isDisposed() {
 		return nil
 	}
@@ -566,7 +425,6 @@ func (i *Image) Dispose() error {
 		return nil
 	}
 	i.mipmap.dispose()
-	i.resolvePendingPixels(false)
 	return nil
 }
 
@@ -583,6 +441,7 @@ func (i *Image) Dispose() error {
 // ReplacePixels always returns nil as of 1.5.0-alpha.
 func (i *Image) ReplacePixels(p []byte) error {
 	i.copyCheck()
+
 	if i.isDisposed() {
 		return nil
 	}
@@ -590,13 +449,14 @@ func (i *Image) ReplacePixels(p []byte) error {
 	if i.isSubImage() {
 		panic("ebiten: render to a subimage is not implemented (ReplacePixels)")
 	}
-	i.resolvePendingPixels(false)
 	s := i.Bounds().Size()
 	if l := 4 * s.X * s.Y; len(p) != l {
 		panic(fmt.Sprintf("ebiten: len(p) was %d but must be %d", len(p), l))
 	}
-	i.mipmap.original().ReplacePixels(p)
-	i.disposeMipmaps()
+
+	px := make([]byte, len(p))
+	copy(px, p)
+	i.mipmap.replacePixels(px)
 	return nil
 }
 
@@ -645,32 +505,16 @@ type DrawImageOptions struct {
 //
 // Error returned by NewImage is always nil as of 1.5.0-alpha.
 func NewImage(width, height int, filter Filter) (*Image, error) {
-	s := shareable.NewImage(width, height)
+	return newImage(width, height, filter, false), nil
+}
+
+func newImage(width, height int, filter Filter, volatile bool) *Image {
 	i := &Image{
-		mipmap: newMipmap(s),
+		mipmap: newMipmap(width, height, volatile),
 		filter: filter,
 	}
 	i.addr = i
-	return i, nil
-}
-
-// makeVolatile makes the image 'volatile'.
-// A volatile image is always cleared at the start of a frame.
-//
-// This is suitable for offscreen images that pixels are changed often.
-//
-// Regular non-volatile images need to record drawing history or read its pixels from GPU if necessary so that all
-// the images can be restored automatically from the context lost. However, such recording the drawing history or
-// reading pixels from GPU are expensive operations. Volatile images can skip such oprations, but the image content
-// is cleared every frame instead.
-//
-// When the image is disposed, makeVolatile does nothing.
-func (i *Image) makeVolatile() {
-	if i.isDisposed() {
-		return
-	}
-	i.mipmap.orig.MakeVolatile()
-	i.disposeMipmaps()
+	return i
 }
 
 // NewImageFromImage creates a new image with the given image (source).
@@ -686,9 +530,8 @@ func NewImageFromImage(source image.Image, filter Filter) (*Image, error) {
 
 	width, height := size.X, size.Y
 
-	s := shareable.NewImage(width, height)
 	i := &Image{
-		mipmap: newMipmap(s),
+		mipmap: newMipmap(width, height, false),
 		filter: filter,
 	}
 	i.addr = i
@@ -697,9 +540,9 @@ func NewImageFromImage(source image.Image, filter Filter) (*Image, error) {
 	return i, nil
 }
 
-func newImageWithScreenFramebuffer(width, height int) *Image {
+func newScreenFramebufferImage(width, height int) *Image {
 	i := &Image{
-		mipmap: newMipmap(shareable.NewScreenFramebufferImage(width, height)),
+		mipmap: newScreenFramebufferMipmap(width, height),
 		filter: FilterDefault,
 	}
 	i.addr = i
