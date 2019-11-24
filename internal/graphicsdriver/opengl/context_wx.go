@@ -202,7 +202,11 @@ func (c *context) bindTextureImpl(t textureNative) {
 func (c *context) deleteTexture(t textureNative) {
 	c.ensureGL()
 	gl := c.gl
-	if !gl.Call("isTexture", js.Value(t)).Bool() {
+	chk := gl.Call("isTexture", js.Value(t))
+	if chk == js.Null() {
+		return
+	}
+	if chk.Type() == js.TypeBoolean && !chk.Bool() {
 		return
 	}
 	if c.lastTexture == t {
@@ -214,7 +218,12 @@ func (c *context) deleteTexture(t textureNative) {
 func (c *context) isTexture(t textureNative) bool {
 	c.ensureGL()
 	gl := c.gl
-	return gl.Call("isTexture", js.Value(t)).Bool()
+	//	return gl.Call("isTexture", js.Value(t)).Bool()
+	chk := gl.Call("isTexture", js.Value(t))
+	if chk == js.Null() {
+		return false
+	}
+	return chk.Type() == js.TypeBoolean && chk.Bool()
 }
 
 func (c *context) texSubImage2D(t textureNative, pixels []byte, x, y, width, height int) {
@@ -252,7 +261,11 @@ func (c *context) setViewportImpl(width, height int) {
 func (c *context) deleteFramebuffer(f framebufferNative) {
 	c.ensureGL()
 	gl := c.gl
-	if !gl.Call("isFramebuffer", js.Value(f)).Bool() {
+	chk := gl.Call("isFramebuffer", js.Value(f))
+	if chk == js.Null() {
+		return
+	}
+	if chk.Type() == js.TypeBoolean && !chk.Bool() {
 		return
 	}
 	// If a framebuffer to be deleted is bound, a newly bound framebuffer
@@ -455,7 +468,14 @@ func (c *context) maxTextureSizeImpl() int {
 func (c *context) getShaderPrecisionFormatPrecision() int {
 	c.ensureGL()
 	gl := c.gl
-	return gl.Call("getShaderPrecisionFormat", js.ValueOf(int(fragmentShader)), highFloat).Get("precision").Int()
+	r := gl.Call("getShaderPrecisionFormat", js.ValueOf(int(fragmentShader)), highFloat)
+	if r != js.Null() {
+		p := r.Get("precision")
+		if p.Type() == js.TypeNumber {
+			return p.Int()
+		}
+	}
+	return 23
 }
 
 func (c *context) flush() {
