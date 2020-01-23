@@ -13,6 +13,7 @@
 // limitations under the License.
 
 // +build go1.13
+// +build wasm
 
 package jsutil
 
