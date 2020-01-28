@@ -26,6 +26,8 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hajimehoshi/ebiten"
@@ -35,10 +37,31 @@ import (
 )
 
 var (
-	windowDecorated = flag.Bool("windowdecorated", true, "whether the window is decorated")
+	// flagLegacy represents whether the legacy APIs are used or not.
+	// If flagLegacy is true, these legacy APIs are used:
+	//
+	//   * ebiten.Run
+	//   * ebiten.ScreenScale
+	//   * ebiten.SetScreenScale
+	//   * ebiten.SetScreenSize
+	//
+	// If flagLegacy is false, these APIs are used:
+	//
+	//   * ebiten.RunGame
+	//   * ebiten.SetWindowSize
+	//   * ebiten.WindowSize
+	//
+	// A resizable window is available only when flagLegacy is false.
+	flagLegacy = flag.Bool("legacy", false, "use the legacy API")
+
+	flagFullscreen        = flag.Bool("fullscreen", false, "fullscreen")
+	flagWindowPosition    = flag.String("windowposition", "", "window position (e.g., 100,200)")
+	flagScreenTransparent = flag.Bool("screentransparent", false, "screen transparent")
+	flagAutoAdjusting     = flag.Bool("autoadjusting", false, "make the game screen auto-adjusting")
 )
 
 func init() {
+	flag.Parse()
 	rand.Seed(time.Now().UnixNano())
 }
 
@@ -72,45 +95,99 @@ func createRandomIconImage() image.Image {
 	return img
 }
 
-func update(screen *ebiten.Image) error {
-	screenScale := ebiten.ScreenScale()
-	const d = 16
-	screenWidth, screenHeight := screen.Size()
+type game struct {
+	width  int
+	height int
+}
+
+func (g *game) Layout(outsideWidth, outsideHeight int) (int, int) {
+	if *flagAutoAdjusting {
+		g.width, g.height = outsideWidth, outsideHeight
+		return outsideWidth, outsideHeight
+	}
+	// Ignore the outside size. This means that the offscreen is not adjusted with the outside world.
+	return g.width, g.height
+}
+
+func (g *game) Update(screen *ebiten.Image) error {
+	var (
+		screenWidth  int
+		screenHeight int
+		screenScale  float64
+	)
+	if *flagLegacy {
+		screenWidth, screenHeight = screen.Size()
+		screenScale = ebiten.ScreenScale()
+	} else {
+		screenWidth = g.width
+		screenHeight = g.height
+		if ww, wh := ebiten.WindowSize(); ww > 0 && wh > 0 {
+			screenScale = math.Min(float64(ww)/float64(g.width), float64(wh)/float64(g.height))
+		} else {
+			// ebiten.WindowSize can return (0, 0) on browsers or mobiles.
+			screenScale = 1
+		}
+	}
+
 	fullscreen := ebiten.IsFullscreen()
 	runnableInBackground := ebiten.IsRunnableInBackground()
 	cursorVisible := ebiten.IsCursorVisible()
 	vsyncEnabled := ebiten.IsVsyncEnabled()
 	tps := ebiten.MaxTPS()
+	decorated := ebiten.IsWindowDecorated()
+	positionX, positionY := ebiten.WindowPosition()
+	transparent := ebiten.IsScreenTransparent()
+	resizable := ebiten.IsWindowResizable()
 
-	if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
-		screenHeight += d
-	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
-		if 16 < screenHeight && d < screenHeight {
-			screenHeight -= d
+	const d = 16
+	toUpdateWindowSize := false
+	if ebiten.IsKeyPressed(ebiten.KeyShift) {
+		if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
+			screenHeight += d
+			toUpdateWindowSize = true
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
+			if 16 < screenHeight && d < screenHeight {
+				screenHeight -= d
+				toUpdateWindowSize = true
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
+			if 16 < screenWidth && d < screenWidth {
+				screenWidth -= d
+				toUpdateWindowSize = true
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
+			screenWidth += d
+			toUpdateWindowSize = true
+		}
+	} else {
+		if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
+			positionY -= d
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
+			positionY += d
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
+			positionX -= d
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
+			positionX += d
 		}
 	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
-		if 16 < screenWidth && d < screenWidth {
-			screenWidth -= d
-		}
-	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
-		screenWidth += d
-	}
-	if inpututil.IsKeyJustPressed(ebiten.KeyS) {
-		switch screenScale {
-		case 0.75:
+	if inpututil.IsKeyJustPressed(ebiten.KeyS) && !*flagAutoAdjusting {
+		switch {
+		case screenScale < 1:
 			screenScale = 1
-		case 1:
+		case screenScale < 1.5:
 			screenScale = 1.5
-		case 1.5:
+		case screenScale < 2:
 			screenScale = 2
-		case 2:
-			screenScale = 0.75
 		default:
-			panic("not reached")
+			screenScale = 0.75
 		}
+		toUpdateWindowSize = true
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyF) {
 		fullscreen = !fullscreen
@@ -138,14 +215,34 @@ func update(screen *ebiten.Image) error {
 			panic("not reached")
 		}
 	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyD) {
+		decorated = !decorated
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+		resizable = !resizable
+	}
 
-	ebiten.SetScreenSize(screenWidth, screenHeight)
-	ebiten.SetScreenScale(screenScale)
+	if toUpdateWindowSize {
+		if *flagLegacy {
+			ebiten.SetScreenSize(screenWidth, screenHeight)
+			ebiten.SetScreenScale(screenScale)
+		} else {
+			g.width = screenWidth
+			g.height = screenHeight
+			ebiten.SetWindowSize(int(float64(screenWidth)*screenScale), int(float64(screenHeight)*screenScale))
+		}
+	}
 	ebiten.SetFullscreen(fullscreen)
 	ebiten.SetRunnableInBackground(runnableInBackground)
 	ebiten.SetCursorVisible(cursorVisible)
 	ebiten.SetVsyncEnabled(vsyncEnabled)
 	ebiten.SetMaxTPS(tps)
+	ebiten.SetWindowDecorated(decorated)
+	ebiten.SetWindowPosition(positionX, positionY)
+	if !*flagLegacy {
+		// A resizable window is available only with RunGame.
+		ebiten.SetWindowResizable(resizable)
+	}
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyI) {
 		ebiten.SetWindowIcon([]image.Image{createRandomIconImage()})
@@ -157,7 +254,9 @@ func update(screen *ebiten.Image) error {
 		return nil
 	}
 
-	screen.Fill(color.RGBA{0x80, 0x80, 0xc0, 0xff})
+	if !transparent {
+		screen.Fill(color.RGBA{0x80, 0x80, 0xc0, 0xff})
+	}
 	w, h := gophersImage.Size()
 	w2, h2 := screen.Size()
 	op := &ebiten.DrawImageOptions{}
@@ -167,33 +266,72 @@ func update(screen *ebiten.Image) error {
 	op.GeoM.Translate(dx, dy)
 	screen.DrawImage(gophersImage, op)
 
-	x, y := ebiten.CursorPosition()
+	wx, wy := ebiten.WindowPosition()
+	cx, cy := ebiten.CursorPosition()
 	tpsStr := "Uncapped"
 	if t := ebiten.MaxTPS(); t != ebiten.UncappedTPS {
 		tpsStr = fmt.Sprintf("%d", t)
 	}
-	msg := fmt.Sprintf(`Press arrow keys to change the window size
-Press S key to change the window scale (only for desktops)
-Press F key to switch the fullscreen state (only for desktops)
+
+	var msgS string
+	var msgR string
+	if *flagLegacy {
+		msgS = "Press S key to change the window scale (only for desktops)\n"
+	} else {
+		msgR = "Press R key to switch the window resizable state (only for desktops)\n"
+	}
+	fg := "Yes"
+	if !ebiten.IsForeground() {
+		fg = "No"
+	}
+
+	msg := fmt.Sprintf(`Press arrow keys to move the window
+Press shift + arrow keys to change the window size
+%sPress F key to switch the fullscreen state (only for desktops)
 Press B key to switch the run-in-background state
 Press C key to switch the cursor visibility
 Press I key to change the window icon (only for desktops)
 Press V key to switch vsync
 Press T key to switch TPS (ticks per second)
+Press D key to switch the window decoration (only for desktops)
+%s
+IsForeground?: %s
+Windows Position: (%d, %d)
 Cursor: (%d, %d)
 TPS: Current: %0.2f / Max: %s
 FPS: %0.2f
-Device Scale Factor: %0.2f`, x, y, ebiten.CurrentTPS(), tpsStr, ebiten.CurrentFPS(), ebiten.DeviceScaleFactor())
+Device Scale Factor: %0.2f`, msgS, msgR, fg, wx, wy, cx, cy, ebiten.CurrentTPS(), tpsStr, ebiten.CurrentFPS(), ebiten.DeviceScaleFactor())
 	ebitenutil.DebugPrint(screen, msg)
 	return nil
 }
 
-func main() {
-	flag.Parse()
+func parseWindowPosition() (int, int, bool) {
+	if *flagWindowPosition == "" {
+		return 0, 0, false
+	}
+	tokens := strings.Split(*flagWindowPosition, ",")
+	if len(tokens) != 2 {
+		return 0, 0, false
+	}
+	x, err := strconv.Atoi(tokens[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	y, err := strconv.Atoi(tokens[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return x, y, true
+}
 
+func main() {
 	fmt.Printf("Device scale factor: %0.2f\n", ebiten.DeviceScaleFactor())
 	w, h := ebiten.ScreenSizeInFullscreen()
 	fmt.Printf("Screen size in fullscreen: %d, %d\n", w, h)
+
+	if !*flagLegacy {
+		fmt.Println("Tip: With -autoadjusting flag, you can make an adjustable game screen.")
+	}
 
 	// Decode image from a byte slice instead of a file so that
 	// this example works in any working directory.
@@ -212,9 +350,38 @@ func main() {
 
 	ebiten.SetWindowIcon([]image.Image{createRandomIconImage()})
 
-	ebiten.SetWindowDecorated(*windowDecorated)
+	if x, y, ok := parseWindowPosition(); ok {
+		ebiten.SetWindowPosition(x, y)
+	}
+	ebiten.SetScreenTransparent(*flagScreenTransparent)
 
-	if err := ebiten.Run(update, initScreenWidth, initScreenHeight, initScreenScale, "Window Size (Ebiten Demo)"); err != nil {
-		log.Fatal(err)
+	g := &game{
+		width:  initScreenWidth,
+		height: initScreenHeight,
+	}
+
+	if *flagFullscreen {
+		ebiten.SetFullscreen(true)
+	}
+	if *flagAutoAdjusting {
+		if *flagLegacy {
+			log.Println("-autoadjusting flag cannot work with -legacy flag")
+		}
+		ebiten.SetWindowResizable(true)
+	}
+
+	const title = "Window Size (Ebiten Demo)"
+	if *flagLegacy {
+		if err := ebiten.Run(g.Update, g.width, g.height, initScreenScale, title); err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		w := int(float64(g.width) * initScreenScale)
+		h := int(float64(g.height) * initScreenScale)
+		ebiten.SetWindowSize(w, h)
+		ebiten.SetWindowTitle(title)
+		if err := ebiten.RunGame(g); err != nil {
+			log.Fatal(err)
+		}
 	}
 }

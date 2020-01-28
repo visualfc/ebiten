@@ -22,7 +22,6 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/hajimehoshi/ebiten/internal/devicescale"
 	"github.com/hajimehoshi/ebiten/internal/glfw"
 )
 
@@ -101,8 +100,7 @@ func getMonitorInfoW(hMonitor uintptr, lpmi *monitorInfo) error {
 }
 
 func (u *UserInterface) glfwScale() float64 {
-	// This function must be called on the main thread.
-	return devicescale.GetAt(u.currentMonitor().GetPos())
+	return u.deviceScaleFactor()
 }
 
 func adjustWindowPosition(x, y int) (int, int) {
@@ -165,6 +163,6 @@ func (u *UserInterface) currentMonitorFromPosition() *glfw.Monitor {
 	return glfw.GetPrimaryMonitor()
 }
 
-func (u *UserInterface) nativeWindow() uintptr {
+func (u *UserInterface) nativeWindow() unsafe.Pointer {
 	return u.window.GetWin32Window()
 }

@@ -23,9 +23,8 @@ type Graphics interface {
 	SetThread(thread *thread.Thread)
 	Begin()
 	End()
-	SetWindow(window uintptr)
+	SetTransparent(transparent bool)
 	SetVertices(vertices []float32, indices []uint16)
-	Flush()
 	NewImage(width, height int) (Image, error)
 	NewScreenFramebufferImage(width, height int) (Image, error)
 	Reset() error
@@ -44,7 +43,15 @@ type Image interface {
 	Pixels() ([]byte, error)
 	SetAsDestination()
 	SetAsSource()
-	ReplacePixels(pixels []byte, x, y, width, height int)
+	ReplacePixels(args []*ReplacePixelsArgs)
+}
+
+type ReplacePixelsArgs struct {
+	Pixels []byte
+	X      int
+	Y      int
+	Width  int
+	Height int
 }
 
 type VDirection int

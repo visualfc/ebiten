@@ -15,15 +15,16 @@
 package buffered
 
 import (
+	"image"
 	"image/color"
 
 	"github.com/hajimehoshi/ebiten/internal/affine"
 	"github.com/hajimehoshi/ebiten/internal/driver"
-	"github.com/hajimehoshi/ebiten/internal/shareable"
+	"github.com/hajimehoshi/ebiten/internal/mipmap"
 )
 
 type Image struct {
-	img    *shareable.Image
+	img    *mipmap.Mipmap
 	width  int
 	height int
 
@@ -32,32 +33,32 @@ type Image struct {
 }
 
 func BeginFrame() error {
-	if err := shareable.BeginFrame(); err != nil {
+	if err := mipmap.BeginFrame(); err != nil {
 		return err
 	}
-	flushDelayedCommands()
-	return nil
+	return flushDelayedCommands()
 }
 
 func EndFrame() error {
-	return shareable.EndFrame()
+	return mipmap.EndFrame()
 }
 
 func NewImage(width, height int, volatile bool) *Image {
 	i := &Image{}
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
-		delayedCommands = append(delayedCommands, func() {
-			i.img = shareable.NewImage(width, height, volatile)
+		delayedCommands = append(delayedCommands, func() error {
+			i.img = mipmap.New(width, height, volatile)
 			i.width = width
 			i.height = height
+			return nil
 		})
 		delayedCommandsM.Unlock()
 		return i
 	}
 	delayedCommandsM.Unlock()
 
-	i.img = shareable.NewImage(width, height, volatile)
+	i.img = mipmap.New(width, height, volatile)
 	i.width = width
 	i.height = height
 	return i
@@ -67,17 +68,18 @@ func NewScreenFramebufferImage(width, height int) *Image {
 	i := &Image{}
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
-		delayedCommands = append(delayedCommands, func() {
-			i.img = shareable.NewScreenFramebufferImage(width, height)
+		delayedCommands = append(delayedCommands, func() error {
+			i.img = mipmap.NewScreenFramebufferMipmap(width, height)
 			i.width = width
 			i.height = height
+			return nil
 		})
 		delayedCommandsM.Unlock()
 		return i
 	}
 	delayedCommandsM.Unlock()
 
-	i.img = shareable.NewScreenFramebufferImage(width, height)
+	i.img = mipmap.NewScreenFramebufferMipmap(width, height)
 	i.width = width
 	i.height = height
 	return i
@@ -103,8 +105,9 @@ func (i *Image) resolvePendingPixels(keepPendingPixels bool) {
 func (i *Image) MarkDisposed() {
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
-		delayedCommands = append(delayedCommands, func() {
+		delayedCommands = append(delayedCommands, func() error {
 			i.img.MarkDisposed()
+			return nil
 		})
 		delayedCommandsM.Unlock()
 		return
@@ -114,7 +117,7 @@ func (i *Image) MarkDisposed() {
 	i.invalidatePendingPixels()
 }
 
-func (i *Image) At(x, y int) (r, g, b, a byte) {
+func (i *Image) At(x, y int) (r, g, b, a byte, err error) {
 	delayedCommandsM.Lock()
 	defer delayedCommandsM.Unlock()
 	if needsToDelayCommands {
@@ -125,28 +128,31 @@ func (i *Image) At(x, y int) (r, g, b, a byte) {
 	return i.img.At(x, y)
 }
 
-func (i *Image) Set(x, y int, r, g, b, a byte) {
+func (i *Image) Set(x, y int, r, g, b, a byte) error {
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
-		delayedCommands = append(delayedCommands, func() {
-			i.set(x, y, r, g, b, a)
+		delayedCommands = append(delayedCommands, func() error {
+			return i.set(x, y, r, g, b, a)
 		})
 		delayedCommandsM.Unlock()
-		return
+		return nil
 	}
 	delayedCommandsM.Unlock()
 
-	i.set(x, y, r, g, b, a)
+	return i.set(x, y, r, g, b, a)
 }
 
-func (img *Image) set(x, y int, r, g, b, a byte) {
+func (img *Image) set(x, y int, r, g, b, a byte) error {
 	w, h := img.width, img.height
 	if img.pixels == nil {
 		pix := make([]byte, 4*w*h)
 		idx := 0
 		for j := 0; j < h; j++ {
 			for i := 0; i < w; i++ {
-				r, g, b, a := img.img.At(i, j)
+				r, g, b, a, err := img.img.At(i, j)
+				if err != nil {
+					return err
+				}
 				pix[4*idx] = r
 				pix[4*idx+1] = g
 				pix[4*idx+2] = b
@@ -161,6 +167,7 @@ func (img *Image) set(x, y int, r, g, b, a byte) {
 	img.pixels[4*(x+y*w)+2] = b
 	img.pixels[4*(x+y*w)+3] = a
 	img.needsToResolvePixels = true
+	return nil
 }
 
 func (i *Image) Dump(name string) error {
@@ -175,8 +182,9 @@ func (i *Image) Dump(name string) error {
 func (i *Image) Fill(clr color.RGBA) {
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
-		delayedCommands = append(delayedCommands, func() {
+		delayedCommands = append(delayedCommands, func() error {
 			i.img.Fill(clr)
+			return nil
 		})
 		delayedCommandsM.Unlock()
 		return
@@ -187,25 +195,14 @@ func (i *Image) Fill(clr color.RGBA) {
 	i.img.Fill(clr)
 }
 
-func (i *Image) ClearFramebuffer() {
-	delayedCommandsM.Lock()
-	if needsToDelayCommands {
-		delayedCommands = append(delayedCommands, func() {
-			i.img.ClearFramebuffer()
-		})
-		delayedCommandsM.Unlock()
-		return
-	}
-	delayedCommandsM.Unlock()
-
-	i.img.ClearFramebuffer()
-}
-
 func (i *Image) ReplacePixels(pix []byte) {
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
-		delayedCommands = append(delayedCommands, func() {
-			i.img.ReplacePixels(pix)
+		delayedCommands = append(delayedCommands, func() error {
+			copied := make([]byte, len(pix))
+			copy(copied, pix)
+			i.img.ReplacePixels(copied)
+			return nil
 		})
 		delayedCommandsM.Unlock()
 		return
@@ -216,6 +213,40 @@ func (i *Image) ReplacePixels(pix []byte) {
 	i.img.ReplacePixels(pix)
 }
 
+func (i *Image) DrawImage(src *Image, bounds image.Rectangle, a, b, c, d, tx, ty float32, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter) {
+	if i == src {
+		panic("buffered: Image.DrawImage: src must be different from the receiver")
+	}
+
+	g := &mipmap.GeoM{
+		A:  a,
+		B:  b,
+		C:  c,
+		D:  d,
+		Tx: tx,
+		Ty: ty,
+	}
+
+	delayedCommandsM.Lock()
+	if needsToDelayCommands {
+		delayedCommands = append(delayedCommands, func() error {
+			i.drawImage(src, bounds, g, colorm, mode, filter)
+			return nil
+		})
+		delayedCommandsM.Unlock()
+		return
+	}
+	delayedCommandsM.Unlock()
+
+	i.drawImage(src, bounds, g, colorm, mode, filter)
+}
+
+func (i *Image) drawImage(src *Image, bounds image.Rectangle, g *mipmap.GeoM, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter) {
+	src.resolvePendingPixels(true)
+	i.resolvePendingPixels(false)
+	i.img.DrawImage(src.img, bounds, g, colorm, mode, filter)
+}
+
 func (i *Image) DrawTriangles(src *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	if i == src {
 		panic("buffered: Image.DrawTriangles: src must be different from the receiver")
@@ -223,14 +254,18 @@ func (i *Image) DrawTriangles(src *Image, vertices []float32, indices []uint16, 
 
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
-		delayedCommands = append(delayedCommands, func() {
-			i.img.DrawTriangles(src.img, vertices, indices, colorm, mode, filter, address)
+		delayedCommands = append(delayedCommands, func() error {
+			i.drawTriangles(src, vertices, indices, colorm, mode, filter, address)
+			return nil
 		})
 		delayedCommandsM.Unlock()
 		return
 	}
 	delayedCommandsM.Unlock()
+	i.drawTriangles(src, vertices, indices, colorm, mode, filter, address)
+}
 
+func (i *Image) drawTriangles(src *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	src.resolvePendingPixels(true)
 	i.resolvePendingPixels(false)
 	i.img.DrawTriangles(src.img, vertices, indices, colorm, mode, filter, address)

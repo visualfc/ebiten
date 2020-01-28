@@ -33,12 +33,36 @@ type (
 	buffer            mgl.Buffer
 )
 
+func (t textureNative) equal(rhs textureNative) bool {
+	return t == rhs
+}
+
+func (f framebufferNative) equal(rhs framebufferNative) bool {
+	return f == rhs
+}
+
+func (s shader) equal(rhs shader) bool {
+	return s == rhs
+}
+
+func (b buffer) equal(rhs buffer) bool {
+	return b == rhs
+}
+
+func (p program) equal(rhs program) bool {
+	return p == rhs
+}
+
 var InvalidTexture textureNative
 
 type (
 	uniformLocation mgl.Uniform
 	attribLocation  mgl.Attrib
 )
+
+func (u uniformLocation) equal(rhs uniformLocation) bool {
+	return u == rhs
+}
 
 type programID uint32
 
@@ -153,12 +177,6 @@ func (c *context) isTexture(t textureNative) bool {
 	return gl.IsTexture(mgl.Texture(t))
 }
 
-func (c *context) texSubImage2D(t textureNative, p []byte, x, y, width, height int) {
-	c.bindTexture(t)
-	gl := c.gl
-	gl.TexSubImage2D(mgl.TEXTURE_2D, 0, x, y, width, height, mgl.RGBA, mgl.UNSIGNED_BYTE, p)
-}
-
 func (c *context) newFramebuffer(texture textureNative) (framebufferNative, error) {
 	gl := c.gl
 	f := gl.CreateFramebuffer()
@@ -236,7 +254,7 @@ func (c *context) newProgram(shaders []shader, attributes []string) (program, er
 	}
 
 	for i, name := range attributes {
-		gl.BindAttribLocation(p, mgl.Attrib{uint(i)}, name)
+		gl.BindAttribLocation(p, mgl.Attrib{Value: uint(i)}, name)
 	}
 
 	gl.LinkProgram(p)
@@ -296,17 +314,17 @@ func (c *context) uniformFloats(p program, location string, v []float32) {
 
 func (c *context) vertexAttribPointer(p program, index int, size int, dataType dataType, stride int, offset int) {
 	gl := c.gl
-	gl.VertexAttribPointer(mgl.Attrib{uint(index)}, size, mgl.Enum(dataType), false, stride, offset)
+	gl.VertexAttribPointer(mgl.Attrib{Value: uint(index)}, size, mgl.Enum(dataType), false, stride, offset)
 }
 
 func (c *context) enableVertexAttribArray(p program, index int) {
 	gl := c.gl
-	gl.EnableVertexAttribArray(mgl.Attrib{uint(index)})
+	gl.EnableVertexAttribArray(mgl.Attrib{Value: uint(index)})
 }
 
 func (c *context) disableVertexAttribArray(p program, index int) {
 	gl := c.gl
-	gl.DisableVertexAttribArray(mgl.Attrib{uint(index)})
+	gl.DisableVertexAttribArray(mgl.Attrib{Value: uint(index)})
 }
 
 func (c *context) newArrayBuffer(size int) buffer {
@@ -368,4 +386,46 @@ func (c *context) flush() {
 
 func (c *context) needsRestoring() bool {
 	return true
+}
+
+func (c *context) canUsePBO() bool {
+	// On Android, using PBO might slow the applications, especially when coming back from the context lost.
+	// Let's not use PBO until we find a good solution.
+	return false
+}
+
+func (c *context) texSubImage2D(t textureNative, width, height int, args []*driver.ReplacePixelsArgs) {
+	c.bindTexture(t)
+	gl := c.gl
+	for _, a := range args {
+		gl.TexSubImage2D(mgl.TEXTURE_2D, 0, a.X, a.Y, a.Width, a.Height, mgl.RGBA, mgl.UNSIGNED_BYTE, a.Pixels)
+	}
+}
+
+func (c *context) newPixelBufferObject(width, height int) buffer {
+	gl := c.gl
+	b := gl.CreateBuffer()
+	gl.BindBuffer(mgl.PIXEL_UNPACK_BUFFER, b)
+	gl.BufferInit(mgl.PIXEL_UNPACK_BUFFER, 4*width*height, mgl.STREAM_DRAW)
+	gl.BindBuffer(mgl.PIXEL_UNPACK_BUFFER, mgl.Buffer{0})
+	return buffer(b)
+}
+
+func (c *context) replacePixelsWithPBO(buffer buffer, t textureNative, width, height int, args []*driver.ReplacePixelsArgs) {
+	// This implementation is not used yet so far. See the comment at canUsePBO.
+
+	c.bindTexture(t)
+	gl := c.gl
+	gl.BindBuffer(mgl.PIXEL_UNPACK_BUFFER, mgl.Buffer(buffer))
+
+	stride := 4 * width
+	for _, a := range args {
+		offset := 4 * (a.Y*width + a.X)
+		for j := 0; j < a.Height; j++ {
+			gl.BufferSubData(mgl.PIXEL_UNPACK_BUFFER, offset+stride*j, a.Pixels[4*a.Width*j:4*a.Width*(j+1)])
+		}
+	}
+
+	gl.TexSubImage2D(mgl.TEXTURE_2D, 0, 0, 0, width, height, mgl.RGBA, mgl.UNSIGNED_BYTE, nil)
+	gl.BindBuffer(mgl.PIXEL_UNPACK_BUFFER, mgl.Buffer{0})
 }

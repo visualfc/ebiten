@@ -19,4 +19,4 @@ package stb
 // License: Apache License 2.0
 // Commit:  ac1c2ee9d24eb6085eb1e968f55e0fb32cacc03a
 
-//go:generate file2byteslice -package=stb -input=stbvorbis.js -output=stbvorbisjs_file.go -var=stbvorbis_js
+//go:generate file2byteslice -package=stb -input=stbvorbis.js -output=stbvorbis.js.go -var=stbvorbis_js -buildtags "js,!wasm"

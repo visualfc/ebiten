@@ -23,7 +23,7 @@ void *MakeMetalLayer() {
   // TODO: Enable colorspace on iOS: this will be available as of iOS 13.0.
 #if !TARGET_OS_IPHONE
   CGColorSpaceRef colorspace =
-    CGColorSpaceCreateWithName(kCGColorSpaceDisplayP3);
+      CGColorSpaceCreateWithName(kCGColorSpaceDisplayP3);
   layer.colorspace = colorspace;
   CGColorSpaceRelease(colorspace);
 #endif
@@ -36,6 +36,10 @@ uint16_t MetalLayer_PixelFormat(void *metalLayer) {
 
 void MetalLayer_SetDevice(void *metalLayer, void *device) {
   ((CAMetalLayer *)metalLayer).device = (id<MTLDevice>)device;
+}
+
+void MetalLayer_SetOpaque(void *metalLayer, unsigned char opaque) {
+  ((CAMetalLayer *)metalLayer).opaque = (BOOL)opaque;
 }
 
 const char *MetalLayer_SetPixelFormat(void *metalLayer, uint16_t pixelFormat) {

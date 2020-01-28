@@ -19,17 +19,13 @@
 package glfw
 
 import (
-	"github.com/hajimehoshi/ebiten/internal/devicescale"
+	"unsafe"
+
 	"github.com/hajimehoshi/ebiten/internal/glfw"
 )
 
 func (u *UserInterface) glfwScale() float64 {
-	// This function must be called on the main thread.
-	cm, ok := getCachedMonitor(u.window.GetPos())
-	if !ok {
-		return devicescale.GetAt(u.currentMonitor().GetPos())
-	}
-	return devicescale.GetAt(cm.x, cm.y)
+	return u.deviceScaleFactor()
 }
 
 func adjustWindowPosition(x, y int) (int, int) {
@@ -44,7 +40,7 @@ func (u *UserInterface) currentMonitorFromPosition() *glfw.Monitor {
 	return glfw.GetPrimaryMonitor()
 }
 
-func (u *UserInterface) nativeWindow() uintptr {
+func (u *UserInterface) nativeWindow() unsafe.Pointer {
 	// TODO: Implement this.
-	return 0
+	return nil
 }

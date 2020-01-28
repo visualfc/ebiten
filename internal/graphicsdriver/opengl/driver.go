@@ -32,6 +32,9 @@ func Get() *Driver {
 type Driver struct {
 	state   openGLState
 	context context
+
+	// drawCalled is true just after Draw is called. This holds true until ReplacePixels is called.
+	drawCalled bool
 }
 
 func (d *Driver) SetThread(thread *thread.Thread) {
@@ -43,11 +46,13 @@ func (d *Driver) Begin() {
 }
 
 func (d *Driver) End() {
-	// Do nothing.
+	// Call glFlush to prevent black flicking (especially on Android (#226) and iOS).
+	// TODO: examples/sprites worked without this. Is this really needed?
+	d.context.flush()
 }
 
-func (d *Driver) SetWindow(window uintptr) {
-	// Do nothing.
+func (d *Driver) SetTransparent(transparent bool) {
+	// Do nothings.
 }
 
 func (d *Driver) checkSize(width, height int) {
@@ -108,6 +113,7 @@ func (d *Driver) SetVertices(vertices []float32, indices []uint16) {
 }
 
 func (d *Driver) Draw(indexLen int, indexOffset int, mode driver.CompositeMode, colorM *affine.ColorM, filter driver.Filter, address driver.Address) error {
+	d.drawCalled = true
 	if err := d.useProgram(mode, colorM, filter, address); err != nil {
 		return err
 	}
@@ -117,10 +123,6 @@ func (d *Driver) Draw(indexLen int, indexOffset int, mode driver.CompositeMode, 
 	// As glFlush() causes performance problems, this should be avoided as much as possible.
 	// Let's wait and see, and file a new issue when this problem is newly found.
 	return nil
-}
-
-func (d *Driver) Flush() {
-	d.context.flush()
 }
 
 func (d *Driver) SetVsyncEnabled(enabled bool) {

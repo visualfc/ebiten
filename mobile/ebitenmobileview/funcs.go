@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build android ios
+
 // Package ebitenmobileview offers functions for OpenGL/Metal view of mobiles.
 //
 // The functions are not intended for public usages.
@@ -23,6 +25,7 @@ import (
 	"runtime"
 
 	"github.com/hajimehoshi/ebiten"
+	"github.com/hajimehoshi/ebiten/internal/uidriver/mobile"
 )
 
 type ViewRectSetter interface {
@@ -57,8 +60,7 @@ func layout(viewWidth, viewHeight int, viewRectSetter ViewRectSetter) {
 	y := (viewHeight - height) / 2
 
 	if theState.isRunning() {
-		ebiten.SetScreenSize(w, h)
-		ebiten.SetScreenScale(scale)
+		mobile.Get().SetScreenSizeAndScale(w, h, scale)
 	} else {
 		// The last argument 'title' is not used on mobile platforms, so just pass an empty string.
 		theState.errorCh = ebiten.RunWithoutMainLoop(theState.game.Update, w, h, scale, "")
@@ -77,4 +79,12 @@ func Update() error {
 	defer theState.m.Unlock()
 
 	return update()
+}
+
+func Suspend() {
+	mobile.Get().SetForeground(false)
+}
+
+func Resume() {
+	mobile.Get().SetForeground(true)
 }

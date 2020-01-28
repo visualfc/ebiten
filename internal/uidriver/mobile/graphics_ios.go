@@ -1,4 +1,4 @@
-// Copyright 2016 Hajime Hoshi
+// Copyright 2019 The Ebiten Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,32 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build android ios
+// +build ios,arm ios,arm64
+// +build !ebitengl
 
-package ebitenmobileview
-
-// #cgo ios LDFLAGS: -framework UIKit -framework GLKit -framework QuartzCore -framework OpenGLES
-//
-// #include <stdint.h>
-import "C"
+package mobile
 
 import (
-	"github.com/hajimehoshi/ebiten/internal/uidriver/mobile"
+	"fmt"
+
+	"github.com/hajimehoshi/ebiten/internal/driver"
+	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/metal"
+	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/metal/mtl"
 )
 
-func update() error {
-	if !theState.isRunning() {
-		// start is not called yet, but as update can be called from another thread, it is OK. Just ignore
-		// this.
-		return nil
+func (*UserInterface) Graphics() driver.Graphics {
+	if _, err := mtl.CreateSystemDefaultDevice(); err != nil {
+		panic(fmt.Sprintf("ebiten: mtl.CreateSystemDefaultDevice failed on iOS: %v", err))
 	}
-
-	select {
-	case err := <-theState.errorCh:
-		return err
-	default:
-	}
-
-	mobile.Get().Render()
-	return nil
+	return metal.Get()
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 The Ebiten Authors
+// Copyright 2019 The Ebiten Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,15 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build android darwin,ios,386 darwin,ios,amd64 freebsd js linux windows ebitengl
+// +build !go1.14
 
-package ebiten
+package jsutil
 
 import (
-	"github.com/hajimehoshi/ebiten/internal/driver"
-	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/opengl"
+	"syscall/js"
 )
 
-func graphicsDriver() driver.Graphics {
-	return opengl.Get()
+func Equal(a, b js.Value) bool {
+	return a == b
 }

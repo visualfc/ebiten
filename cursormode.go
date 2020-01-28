@@ -12,22 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build darwin,ios,arm darwin,ios,arm64
-// +build !ebitengl
-
 package ebiten
 
-import (
-	"fmt"
+import "github.com/hajimehoshi/ebiten/internal/driver"
 
-	"github.com/hajimehoshi/ebiten/internal/driver"
-	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/metal"
-	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/metal/mtl"
+// A CursorModeType represents
+// a render and coordinate mode of a mouse cursor.
+type CursorModeType int
+
+// Cursor Modes
+const (
+	CursorModeVisible  = CursorModeType(driver.CursorModeVisible)
+	CursorModeHidden   = CursorModeType(driver.CursorModeHidden)
+	CursorModeCaptured = CursorModeType(driver.CursorModeCaptured)
 )
-
-func graphicsDriver() driver.Graphics {
-	if _, err := mtl.CreateSystemDefaultDevice(); err != nil {
-		panic(fmt.Sprintf("ebiten: mtl.CreateSystemDefaultDevice failed on iOS: %v", err))
-	}
-	return metal.Get()
-}

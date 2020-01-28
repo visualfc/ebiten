@@ -21,6 +21,7 @@ import (
 	"unicode"
 
 	"github.com/hajimehoshi/ebiten/internal/driver"
+	"github.com/hajimehoshi/ebiten/internal/jsutil"
 )
 
 type pos struct {
@@ -30,6 +31,7 @@ type pos struct {
 
 type gamePad struct {
 	valid         bool
+	name          string
 	axisNum       int
 	axes          [16]float64
 	buttonNum     int
@@ -51,7 +53,24 @@ type Input struct {
 }
 
 func (i *Input) CursorPosition() (x, y int) {
-	return i.ui.adjustPosition(i.cursorX, i.cursorY)
+	xf, yf := i.ui.context.AdjustPosition(float64(i.cursorX), float64(i.cursorY))
+	return int(xf), int(yf)
+}
+
+func (i *Input) GamepadSDLID(id int) string {
+	// TODO: Implement this. See the implementation of SDL:
+	// https://github.com/spurious/SDL-mirror/blob/master/src/joystick/emscripten/SDL_sysjoystick.c
+	return ""
+}
+
+// GamepadName returns a string containing some information about the controller.
+// A PS2 controller returned "810-3-USB Gamepad" on Firefox
+// A Xbox 360 controller returned "xinput" on Firefox and "Xbox 360 Controller (XInput STANDARD GAMEPAD)" on Chrome
+func (i *Input) GamepadName(id int) string {
+	if len(i.gamepads) <= id {
+		return ""
+	}
+	return i.gamepads[id].name
 }
 
 func (i *Input) GamepadIDs() []int {
@@ -110,7 +129,8 @@ func (i *Input) TouchIDs() []int {
 func (i *Input) TouchPosition(id int) (x, y int) {
 	for tid, pos := range i.touches {
 		if id == tid {
-			return i.ui.adjustPosition(pos.X, pos.Y)
+			x, y := i.ui.context.AdjustPosition(float64(pos.X), float64(pos.Y))
+			return int(x), int(y)
 		}
 	}
 	return 0, 0
@@ -218,7 +238,7 @@ func (i *Input) setMouseCursor(x, y int) {
 
 func (i *Input) UpdateGamepads() {
 	nav := js.Global().Get("navigator")
-	if nav.Get("getGamepads") == js.Undefined() {
+	if jsutil.Equal(nav.Get("getGamepads"), js.Undefined()) {
 		return
 	}
 	gamepads := nav.Call("getGamepads")
@@ -226,10 +246,11 @@ func (i *Input) UpdateGamepads() {
 	for id := 0; id < l; id++ {
 		i.gamepads[id].valid = false
 		gamepad := gamepads.Index(id)
-		if gamepad == js.Undefined() || gamepad == js.Null() {
+		if jsutil.Equal(gamepad, js.Undefined()) || jsutil.Equal(gamepad, js.Null()) {
 			continue
 		}
 		i.gamepads[id].valid = true
+		i.gamepads[id].name = gamepad.Get("id").String()
 
 		axes := gamepad.Get("axes")
 		axesNum := axes.Get("length").Int()
@@ -259,7 +280,7 @@ func (i *Input) Update(e js.Value) {
 	switch e.Get("type").String() {
 	case "keydown":
 		c := e.Get("code")
-		if c == js.Undefined() {
+		if jsutil.Equal(c, js.Undefined()) {
 			code := e.Get("keyCode").Int()
 			if keyCodeToKeyEdge[code] == driver.KeyUp ||
 				keyCodeToKeyEdge[code] == driver.KeyDown ||
@@ -287,7 +308,7 @@ func (i *Input) Update(e js.Value) {
 			i.runeBuffer = append(i.runeBuffer, r)
 		}
 	case "keyup":
-		if e.Get("code") == js.Undefined() {
+		if jsutil.Equal(e.Get("code"), js.Undefined()) {
 			// Assume that UA is Edge.
 			code := e.Get("keyCode").Int()
 			i.keyUpEdge(code)

@@ -1,4 +1,4 @@
-// Copyright 2019 The Ebiten Authors
+// Copyright 2020 The Ebiten Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build !android
-// +build !ios
-
-package ebitenmobileview
-
-func update() error {
-	return nil
-}
-
-func UpdateTouchesOnAndroid(action int, id int, x, y int) {
-}
-
-func UpdateTouchesOnIOS(phase int, ptr int64, x, y int) {
-}
+// Package event implements low-layer events and their handlings.
+//
+// This is still work in progress and is not used anywhere yet.
+// The tracking issue is #926.
+package event

@@ -14,8 +14,48 @@
 
 // Package ebiten provides graphics and input API to develop a 2D game.
 //
-// You can start the game by calling the function Run.
+// You can start the game by calling the function RunGame.
 //
+//     // Game implements ebiten.Game interface.
+//     type Game struct{}
+//
+//     // Update proceeds the game state.
+//     // Update is called every frame (1/60 [s]).
+//     func (g *Game) Update(screen *ebiten.Image) error {
+//
+//         // Write your game's logical update.
+//
+//         if ebiten.IsDrawingSkipped() {
+//             // When the game is running slowly, the rendering result
+//             // will not be adopted.
+//             return nil
+//         }
+//
+//         // Write your game's rendering.
+//
+//         return nil
+//     }
+//
+//     // Layout takes the outside size (e.g., the window size) and returns the (logical) screen size.
+//     // If you don't have to adjust the screen size with the outside size, just return a fixed size.
+//     func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
+//         return 320, 240
+//     }
+//
+//     func main() {
+//         game := &Game{}
+//         // Sepcify the window size as you like. Here, a doulbed size is specified.
+//         ebiten.SetWindowSize(640, 480)
+//         ebiten.SetWindowTitle("Your game's title")
+//         // Call ebiten.RunGame to start your game loop.
+//         if err := ebiten.RunGame(game); err != nil {
+//             log.Fatal(err)
+//         }
+//     }
+//
+// For backward compatibility, you can use a shorthand style Run.
+//
+//     // update proceeds the game state.
 //     // update is called every frame (1/60 [s]).
 //     func update(screen *ebiten.Image) error {
 //
@@ -41,7 +81,7 @@
 //
 // In the API document, 'the main thread' means the goroutine in init(), main() and their callees without 'go'
 // statement. It is assured that 'the main thread' runs on the OS main thread. There are some Ebiten functions that
-// must be called on the main thread under some conditions (typically, before ebiten.Run is called).
+// must be called on the main thread under some conditions (typically, before ebiten.RunGame is called).
 //
 // Environment variables
 //

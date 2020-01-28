@@ -19,6 +19,7 @@ import (
 	"image"
 	"image/color"
 
+	"github.com/hajimehoshi/ebiten/internal/buffered"
 	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
 )
@@ -33,9 +34,7 @@ type Image struct {
 	// See strings.Builder for similar examples.
 	addr *Image
 
-	// mipmap is a set of shareable.Image sorted by the order of mipmap level.
-	// The level 0 image is a regular image and higher-level images are used for mipmap.
-	mipmap *mipmap
+	buffered *buffered.Image
 
 	bounds   image.Rectangle
 	original *Image
@@ -56,7 +55,7 @@ func (i *Image) Size() (width, height int) {
 }
 
 func (i *Image) isDisposed() bool {
-	return i.mipmap.isDisposed()
+	return i.buffered == nil
 }
 
 func (i *Image) isSubImage() bool {
@@ -90,7 +89,7 @@ func (i *Image) Fill(clr color.Color) error {
 		panic("ebiten: render to a subimage is not implemented (Fill)")
 	}
 
-	i.mipmap.fill(color.RGBAModel.Convert(clr).(color.RGBA))
+	i.buffered.Fill(color.RGBAModel.Convert(clr).(color.RGBA))
 	return nil
 }
 
@@ -128,7 +127,7 @@ func (i *Image) Fill(clr color.Color) error {
 // case is when you use an offscreen as a render source. An offscreen doesn't
 // share the texture atlas with high probability.
 //
-// For more performance tips, see https://ebiten.org/performancetips.html
+// For more performance tips, see https://ebiten.org/documents/performancetips.html
 //
 // DrawImage always returns nil as of 1.5.0-alpha.
 func (i *Image) DrawImage(img *Image, options *DrawImageOptions) error {
@@ -199,7 +198,8 @@ func (i *Image) DrawImage(img *Image, options *DrawImageOptions) error {
 		filter = driver.Filter(img.filter)
 	}
 
-	i.mipmap.drawImage(img.mipmap, img.Bounds(), geom, options.ColorM.impl, mode, filter)
+	a, b, c, d, tx, ty := geom.elements()
+	i.buffered.DrawImage(img.buffered, img.Bounds(), a, b, c, d, tx, ty, options.ColorM.impl, mode, filter)
 	return nil
 }
 
@@ -307,7 +307,32 @@ func (i *Image) DrawTriangles(vertices []Vertex, indices []uint16, img *Image, o
 		filter = driver.Filter(img.filter)
 	}
 
-	i.mipmap.drawTriangles(img.mipmap, img.Bounds(), vertices, indices, options.ColorM.impl, mode, filter, driver.Address(options.Address))
+	b := img.Bounds()
+	bx0 := float32(b.Min.X)
+	by0 := float32(b.Min.Y)
+	bx1 := float32(b.Max.X)
+	by1 := float32(b.Max.Y)
+
+	// TODO: Should we use mipmap.verticesBackend?
+	vs := make([]float32, len(vertices)*graphics.VertexFloatNum)
+	for i, v := range vertices {
+		vs[i*graphics.VertexFloatNum] = v.DstX
+		vs[i*graphics.VertexFloatNum+1] = v.DstY
+		vs[i*graphics.VertexFloatNum+2] = v.SrcX
+		vs[i*graphics.VertexFloatNum+3] = v.SrcY
+		vs[i*graphics.VertexFloatNum+4] = bx0
+		vs[i*graphics.VertexFloatNum+5] = by0
+		vs[i*graphics.VertexFloatNum+6] = bx1
+		vs[i*graphics.VertexFloatNum+7] = by1
+		vs[i*graphics.VertexFloatNum+8] = v.ColorR
+		vs[i*graphics.VertexFloatNum+9] = v.ColorG
+		vs[i*graphics.VertexFloatNum+10] = v.ColorB
+		vs[i*graphics.VertexFloatNum+11] = v.ColorA
+	}
+	is := make([]uint16, len(indices))
+	copy(is, indices)
+
+	i.buffered.DrawTriangles(img.buffered, vs, is, options.ColorM.impl, mode, filter, driver.Address(options.Address))
 }
 
 // SubImage returns an image representing the portion of the image p visible through r. The returned value shares pixels with the original image.
@@ -324,8 +349,8 @@ func (i *Image) SubImage(r image.Rectangle) image.Image {
 	}
 
 	img := &Image{
-		mipmap: i.mipmap,
-		filter: i.filter,
+		buffered: i.buffered,
+		filter:   i.filter,
 	}
 
 	// Keep the original image's reference not to dispose that by GC.
@@ -350,10 +375,6 @@ func (i *Image) SubImage(r image.Rectangle) image.Image {
 func (i *Image) Bounds() image.Rectangle {
 	if i.isDisposed() {
 		panic("ebiten: the image is already disposed")
-	}
-	if !i.isSubImage() {
-		w, h := i.mipmap.size()
-		return image.Rect(0, 0, w, h)
 	}
 	return i.bounds
 }
@@ -380,7 +401,10 @@ func (i *Image) At(x, y int) color.Color {
 	if i.isSubImage() && !image.Pt(x, y).In(i.bounds) {
 		return color.RGBA{}
 	}
-	r, g, b, a := i.mipmap.at(x, y)
+	r, g, b, a, err := i.buffered.At(x, y)
+	if err != nil {
+		theUIContext.setError(err)
+	}
 	return color.RGBA{r, g, b, a}
 }
 
@@ -404,7 +428,9 @@ func (i *Image) Set(x, y int, clr color.Color) {
 	}
 
 	r, g, b, a := clr.RGBA()
-	i.mipmap.set(x, y, byte(r>>8), byte(g>>8), byte(b>>8), byte(a>>8))
+	if err := i.buffered.Set(x, y, byte(r>>8), byte(g>>8), byte(b>>8), byte(a>>8)); err != nil {
+		theUIContext.setError(err)
+	}
 }
 
 // Dispose disposes the image data. After disposing, most of image functions do nothing and returns meaningless values.
@@ -424,7 +450,8 @@ func (i *Image) Dispose() error {
 	if i.isSubImage() {
 		return nil
 	}
-	i.mipmap.dispose()
+	i.buffered.MarkDisposed()
+	i.buffered = nil
 	return nil
 }
 
@@ -454,9 +481,7 @@ func (i *Image) ReplacePixels(p []byte) error {
 		panic(fmt.Sprintf("ebiten: len(p) was %d but must be %d", len(p), l))
 	}
 
-	px := make([]byte, len(p))
-	copy(px, p)
-	i.mipmap.replacePixels(px)
+	i.buffered.ReplacePixels(p)
 	return nil
 }
 
@@ -510,8 +535,9 @@ func NewImage(width, height int, filter Filter) (*Image, error) {
 
 func newImage(width, height int, filter Filter, volatile bool) *Image {
 	i := &Image{
-		mipmap: newMipmap(width, height, volatile),
-		filter: filter,
+		buffered: buffered.NewImage(width, height, volatile),
+		filter:   filter,
+		bounds:   image.Rect(0, 0, width, height),
 	}
 	i.addr = i
 	return i
@@ -531,8 +557,9 @@ func NewImageFromImage(source image.Image, filter Filter) (*Image, error) {
 	width, height := size.X, size.Y
 
 	i := &Image{
-		mipmap: newMipmap(width, height, false),
-		filter: filter,
+		buffered: buffered.NewImage(width, height, false),
+		filter:   filter,
+		bounds:   image.Rect(0, 0, width, height),
 	}
 	i.addr = i
 
@@ -542,8 +569,9 @@ func NewImageFromImage(source image.Image, filter Filter) (*Image, error) {
 
 func newScreenFramebufferImage(width, height int) *Image {
 	i := &Image{
-		mipmap: newScreenFramebufferMipmap(width, height),
-		filter: FilterDefault,
+		buffered: buffered.NewScreenFramebufferImage(width, height),
+		filter:   FilterDefault,
+		bounds:   image.Rect(0, 0, width, height),
 	}
 	i.addr = i
 	return i

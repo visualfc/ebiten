@@ -15,6 +15,7 @@
 package opengl
 
 import (
+	"github.com/hajimehoshi/ebiten/internal/driver"
 	"github.com/hajimehoshi/ebiten/internal/graphics"
 )
 
@@ -22,6 +23,7 @@ type Image struct {
 	driver        *Driver
 	textureNative textureNative
 	framebuffer   *framebuffer
+	pbo           buffer
 	width         int
 	height        int
 	screen        bool
@@ -32,10 +34,13 @@ func (i *Image) IsInvalidated() bool {
 }
 
 func (i *Image) Dispose() {
+	if !i.pbo.equal(*new(buffer)) {
+		i.driver.context.deleteBuffer(i.pbo)
+	}
 	if i.framebuffer != nil {
 		i.framebuffer.delete(&i.driver.context)
 	}
-	if i.textureNative != *new(textureNative) {
+	if !i.textureNative.equal(*new(textureNative)) {
 		i.driver.context.deleteTexture(i.textureNative)
 	}
 }
@@ -85,15 +90,34 @@ func (i *Image) ensureFramebuffer() error {
 	return nil
 }
 
-func (i *Image) ReplacePixels(p []byte, x, y, width, height int) {
+func (i *Image) ReplacePixels(args []*driver.ReplacePixelsArgs) {
 	if i.screen {
 		panic("opengl: ReplacePixels cannot be called on the screen, that doesn't have a texture")
+	}
+	if len(args) == 0 {
+		return
 	}
 
 	// glFlush is necessary on Android.
 	// glTexSubImage2D didn't work without this hack at least on Nexus 5x and NuAns NEO [Reloaded] (#211).
-	i.driver.context.flush()
-	i.driver.context.texSubImage2D(i.textureNative, p, x, y, width, height)
+	if i.driver.drawCalled {
+		i.driver.context.flush()
+	}
+	i.driver.drawCalled = false
+
+	w, h := i.width, i.height
+	if !i.driver.context.canUsePBO() {
+		i.driver.context.texSubImage2D(i.textureNative, w, h, args)
+		return
+	}
+	if i.pbo.equal(*new(buffer)) {
+		i.pbo = i.driver.context.newPixelBufferObject(w, h)
+	}
+	if i.pbo.equal(*new(buffer)) {
+		panic("opengl: newPixelBufferObject failed")
+	}
+
+	i.driver.context.replacePixelsWithPBO(i.pbo, i.textureNative, w, h, args)
 }
 
 func (i *Image) SetAsSource() {

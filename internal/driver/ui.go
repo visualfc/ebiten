@@ -17,18 +17,12 @@ package driver
 import (
 	"errors"
 	"image"
-	"time"
 )
 
-// IsPlayground indicates whether the current environment is the Go Playground (play.golang.org) or not.
-// The fixed time is explicitly defined. See "About the Playground" at play.golang.org.
-var IsPlayground = time.Now().UnixNano() == 1257894000000000000
-
 type UIContext interface {
-	SetSize(width, height int, scale float64)
 	Update(afterFrameUpdate func()) error
-	SuspendAudio()
-	ResumeAudio()
+	Layout(outsideWidth, outsideHeight float64)
+	AdjustPosition(x, y float64) (float64, float64)
 }
 
 // RegularTermination represents a regular termination.
@@ -37,27 +31,43 @@ type UIContext interface {
 var RegularTermination = errors.New("regular termination")
 
 type UI interface {
+	Run(context UIContext) error
+	RunWithoutMainLoop(width, height int, scale float64, title string, context UIContext) <-chan error
+
 	DeviceScaleFactor() float64
-	IsCursorVisible() bool
+	CursorMode() CursorMode
 	IsFullscreen() bool
+	IsForeground() bool
 	IsRunnableInBackground() bool
 	IsVsyncEnabled() bool
-	IsWindowDecorated() bool
-	IsWindowResizable() bool
-	Run(width, height int, scale float64, title string, context UIContext, graphics Graphics) error
-	RunWithoutMainLoop(width, height int, scale float64, title string, context UIContext, graphics Graphics) <-chan error
-	ScreenPadding() (x0, y0, x1, y1 float64)
-	ScreenScale() float64
 	ScreenSizeInFullscreen() (int, int)
-	SetCursorVisible(visible bool)
+	IsScreenTransparent() bool
+	MonitorPosition() (int, int)
+
+	SetCursorMode(mode CursorMode)
 	SetFullscreen(fullscreen bool)
 	SetRunnableInBackground(runnableInBackground bool)
-	SetScreenScale(scale float64)
-	SetScreenSize(width, height int)
 	SetVsyncEnabled(enabled bool)
-	SetWindowDecorated(decorated bool)
-	SetWindowIcon(iconImages []image.Image)
-	SetWindowResizable(resizable bool)
-	SetWindowTitle(title string)
+	SetScreenTransparent(transparent bool)
+
 	Input() Input
+	Window() Window
+	Graphics() Graphics
+}
+
+type Window interface {
+	IsDecorated() bool
+	SetDecorated(decorated bool)
+
+	IsResizable() bool
+	SetResizable(resizable bool)
+
+	Position() (int, int)
+	SetPosition(x, y int)
+
+	Size() (int, int)
+	SetSize(width, height int)
+
+	SetIcon(iconImages []image.Image)
+	SetTitle(title string)
 }

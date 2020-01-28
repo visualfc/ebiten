@@ -12,36 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package math_test
+package triangulate
 
 import (
-	"testing"
-
-	. "github.com/hajimehoshi/ebiten/vector/internal/math"
+	"math"
 )
 
-func TestIntersectionAsLine(t *testing.T) {
-	cases := []struct {
-		S0   Segment
-		S1   Segment
-		Want Point
-	}{
-		{
-			S0:   Segment{Point{0.5, 0}, Point{0.5, 0.5}},
-			S1:   Segment{Point{1, 1}, Point{2, 1}},
-			Want: Point{0.5, 1},
-		},
-		{
-			S0:   Segment{Point{0.5, 0}, Point{0.5, 1.5}},
-			S1:   Segment{Point{1, 1}, Point{2, 1}},
-			Want: Point{0.5, 1},
-		},
-	}
-	for _, c := range cases {
-		got := c.S0.IntersectionAsLines(c.S1)
-		want := c.Want
-		if got != want {
-			t.Errorf("got: %v, want: %v", got, want)
-		}
-	}
+var nan32 = float32(math.NaN())
+
+type Point struct {
+	X float32
+	Y float32
 }

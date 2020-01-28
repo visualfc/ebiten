@@ -20,10 +20,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 )
 
-const gomobileHash = "597adff16ade9d88626f8caea514bb189b8c74ee"
+const gomobileHash = "82c397c4c5279f331dce14d734fda7060e4a3691"
 
 func runCommand(command string, args []string, env []string) error {
 	if buildX || buildN {
@@ -55,8 +54,7 @@ func runGo(args ...string) error {
 	env := []string{
 		"GO111MODULE=on",
 	}
-	gocmd := filepath.Join(runtime.GOROOT(), "bin", "go")
-	return runCommand(gocmd, args, env)
+	return runCommand("go", args, env)
 }
 
 func prepareGomobileCommands() error {
@@ -91,6 +89,19 @@ func prepareGomobileCommands() error {
 	defer func() {
 		os.Chdir(pwd)
 	}()
+
+	// Hack to enable go-list at the temporary directory.
+	f, err := os.Create("main.go")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.WriteString("package main\n"); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
 
 	if err := runGo("mod", "init", "ebitenmobiletemporary"); err != nil {
 		return err

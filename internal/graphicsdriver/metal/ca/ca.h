@@ -22,6 +22,7 @@ void *MakeMetalLayer();
 
 uint16_t MetalLayer_PixelFormat(void *metalLayer);
 void MetalLayer_SetDevice(void *metalLayer, void *device);
+void MetalLayer_SetOpaque(void *metalLayer, unsigned char opaque);
 const char *MetalLayer_SetPixelFormat(void *metalLayer, uint16_t pixelFormat);
 const char *MetalLayer_SetMaximumDrawableCount(void *metalLayer,
                                                uint_t maximumDrawableCount);
