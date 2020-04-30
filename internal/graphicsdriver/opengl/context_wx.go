@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/// +build ignore
 // +build js,wx
 
 package opengl
@@ -22,6 +23,7 @@ import (
 	"syscall/js"
 
 	"github.com/hajimehoshi/ebiten/internal/driver"
+	"github.com/hajimehoshi/ebiten/internal/jsutil"
 )
 
 type (
@@ -39,6 +41,30 @@ type (
 	}
 )
 
+func (t textureNative) equal(rhs textureNative) bool {
+	return jsutil.Equal(js.Value(t), js.Value(rhs))
+}
+
+func (f framebufferNative) equal(rhs framebufferNative) bool {
+	return jsutil.Equal(js.Value(f), js.Value(rhs))
+}
+
+func (s shader) equal(rhs shader) bool {
+	return jsutil.Equal(js.Value(s), js.Value(rhs))
+}
+
+func (b buffer) equal(rhs buffer) bool {
+	return jsutil.Equal(js.Value(b), js.Value(rhs))
+}
+
+func (u uniformLocation) equal(rhs uniformLocation) bool {
+	return jsutil.Equal(js.Value(u), js.Value(rhs))
+}
+
+func (p program) equal(rhs program) bool {
+	return jsutil.Equal(p.value, rhs.value) && p.id == rhs.id
+}
+
 var InvalidTexture = textureNative(js.Null())
 
 func getProgramID(p program) programID {
@@ -47,7 +73,6 @@ func getProgramID(p program) programID {
 
 var (
 	// Accessing the prototype is rquired on Safari.
-	//contextPrototype = js.Global().Get("canvas")
 	contextPrototype = js.Global().Get("canvas").Call("getContext", "webgl")
 
 	vertexShader       = shaderType(contextPrototype.Get("VERTEX_SHADER").Int())
@@ -89,24 +114,34 @@ var (
 	unsignedShort       = contextPrototype.Get("UNSIGNED_SHORT")
 )
 
+// temporaryBuffer is a temporary buffer used at gl.readPixels.
+// The read data is converted to Go's byte slice as soon as possible.
+// To avoid often allocating ArrayBuffer, reuse the buffer whenever possible.
+var temporaryBuffer = js.Global().Get("ArrayBuffer").New(16)
+
 type contextImpl struct {
 	gl            js.Value
 	lastProgramID programID
 }
 
 func (c *context) ensureGL() {
-	if c.gl != (js.Value{}) {
+	if !jsutil.Equal(c.gl, js.Value{}) {
 		return
 	}
 
+	// if jsutil.Equal(js.Global().Get("WebGLRenderingContext"), js.Undefined()) {
+	// 	panic("opengl: WebGL is not supported")
+	// }
+	// TODO: Define id?
+	//canvas := js.Global().Get("document").Call("querySelector", "canvas")
 	canvas := js.Global().Get("canvas")
 	attr := js.Global().Get("Object").New()
 	attr.Set("alpha", true)
 	attr.Set("premultipliedAlpha", true)
 	gl := canvas.Call("getContext", "webgl", attr)
-	if gl == js.Null() {
+	if jsutil.Equal(gl, js.Null()) {
 		gl = canvas.Call("getContext", "experimental-webgl", attr)
-		if gl == js.Null() {
+		if jsutil.Equal(gl, js.Null()) {
 			panic("opengl: getContext failed")
 		}
 	}
@@ -151,7 +186,7 @@ func (c *context) newTexture(width, height int) (textureNative, error) {
 	c.ensureGL()
 	gl := c.gl
 	t := gl.Call("createTexture")
-	if t == js.Null() {
+	if jsutil.Equal(t, js.Null()) {
 		return textureNative(js.Null()), errors.New("opengl: glGenTexture failed")
 	}
 	gl.Call("pixelStorei", unpackAlignment, 4)
@@ -186,11 +221,17 @@ func (c *context) framebufferPixels(f *framebuffer, width, height int) ([]byte, 
 
 	c.bindFramebuffer(f.native)
 
-	pixels := make([]byte, 4*width*height)
-	p := js.TypedArrayOf(pixels)
+	l := 4 * width * height
+	if bufl := temporaryBuffer.Get("byteLength").Int(); bufl < l {
+		for bufl < l {
+			bufl *= 2
+		}
+		temporaryBuffer = js.Global().Get("ArrayBuffer").New(bufl)
+	}
+	p := js.Global().Get("Uint8Array").New(temporaryBuffer, 0, l)
 	gl.Call("readPixels", 0, 0, width, height, rgba, unsignedByte, p)
-	p.Release()
-	return pixels, nil
+
+	return jsutil.Uint8ArrayToSlice(p), nil
 }
 
 func (c *context) bindTextureImpl(t textureNative) {
@@ -203,13 +244,13 @@ func (c *context) deleteTexture(t textureNative) {
 	c.ensureGL()
 	gl := c.gl
 	chk := gl.Call("isTexture", js.Value(t))
-	if chk == js.Null() {
+	if jsutil.Equal(chk, js.Null()) {
 		return
 	}
 	if chk.Type() == js.TypeBoolean && !chk.Bool() {
 		return
 	}
-	if c.lastTexture == t {
+	if c.lastTexture.equal(t) {
 		c.lastTexture = textureNative(js.Null())
 	}
 	gl.Call("deleteTexture", js.Value(t))
@@ -218,9 +259,8 @@ func (c *context) deleteTexture(t textureNative) {
 func (c *context) isTexture(t textureNative) bool {
 	c.ensureGL()
 	gl := c.gl
-	//	return gl.Call("isTexture", js.Value(t)).Bool()
 	chk := gl.Call("isTexture", js.Value(t))
-	if chk == js.Null() {
+	if jsutil.Equal(chk, js.Null()) {
 		return false
 	}
 	return chk.Type() == js.TypeBoolean && chk.Bool()
@@ -233,9 +273,9 @@ func (c *context) texSubImage2D(t textureNative, pixels []byte, x, y, width, hei
 	// void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
 	//                    GLsizei width, GLsizei height,
 	//                    GLenum format, GLenum type, ArrayBufferView? pixels);
-	p := js.TypedArrayOf(pixels)
+	p, free := jsutil.SliceToTypedArray(pixels)
 	gl.Call("texSubImage2D", texture2d, 0, x, y, width, height, rgba, unsignedByte, p)
-	p.Release()
+	free()
 }
 
 func (c *context) newFramebuffer(t textureNative) (framebufferNative, error) {
@@ -261,17 +301,13 @@ func (c *context) setViewportImpl(width, height int) {
 func (c *context) deleteFramebuffer(f framebufferNative) {
 	c.ensureGL()
 	gl := c.gl
-	chk := gl.Call("isFramebuffer", js.Value(f))
-	if chk == js.Null() {
-		return
-	}
-	if chk.Type() == js.TypeBoolean && !chk.Bool() {
+	if !gl.Call("isFramebuffer", js.Value(f)).Bool() {
 		return
 	}
 	// If a framebuffer to be deleted is bound, a newly bound framebuffer
 	// will be a default framebuffer.
 	// https://www.khronos.org/opengles/sdk/docs/man/xhtml/glDeleteFramebuffers.xml
-	if c.lastFramebuffer == f {
+	if c.lastFramebuffer.equal(f) {
 		c.lastFramebuffer = framebufferNative(js.Null())
 		c.lastViewportWidth = 0
 		c.lastViewportHeight = 0
@@ -283,7 +319,7 @@ func (c *context) newShader(shaderType shaderType, source string) (shader, error
 	c.ensureGL()
 	gl := c.gl
 	s := gl.Call("createShader", int(shaderType))
-	if s == js.Null() {
+	if jsutil.Equal(s, js.Null()) {
 		return shader(js.Null()), fmt.Errorf("opengl: glCreateShader failed: shader type: %d", shaderType)
 	}
 
@@ -307,7 +343,7 @@ func (c *context) newProgram(shaders []shader, attributes []string) (program, er
 	c.ensureGL()
 	gl := c.gl
 	v := gl.Call("createProgram")
-	if v == js.Null() {
+	if jsutil.Equal(v, js.Null()) {
 		return program{}, errors.New("opengl: glCreateProgram failed")
 	}
 
@@ -320,9 +356,9 @@ func (c *context) newProgram(shaders []shader, attributes []string) (program, er
 	}
 
 	gl.Call("linkProgram", v)
-	// if !gl.Call("getProgramParameter", v, linkStatus).Bool() {
-	// 	return program{}, errors.New("opengl: program error")
-	// }
+	if !gl.Call("getProgramParameter", v, linkStatus).Bool() {
+		return program{}, errors.New("opengl: program error")
+	}
 
 	id := c.lastProgramID
 	c.lastProgramID++
@@ -367,10 +403,6 @@ func (c *context) uniformFloat(p program, location string, v float32) {
 	gl.Call("uniform1f", js.Value(l), v)
 }
 
-var (
-	float32Array = js.Global().Get("Float32Array")
-)
-
 func (c *context) uniformFloats(p program, location string, v []float32) {
 	c.ensureGL()
 	gl := c.gl
@@ -381,9 +413,9 @@ func (c *context) uniformFloats(p program, location string, v []float32) {
 	case 4:
 		gl.Call("uniform4f", js.Value(l), v[0], v[1], v[2], v[3])
 	case 16:
-		arr := js.TypedArrayOf(v)
+		arr, free := jsutil.SliceToTypedArray(v)
 		gl.Call("uniformMatrix4fv", js.Value(l), false, arr)
-		arr.Release()
+		free()
 	default:
 		panic(fmt.Sprintf("opengl: invalid uniform floats num: %d", len(v)))
 	}
@@ -434,17 +466,17 @@ func (c *context) bindBuffer(bufferType bufferType, b buffer) {
 func (c *context) arrayBufferSubData(data []float32) {
 	c.ensureGL()
 	gl := c.gl
-	arr := js.TypedArrayOf(data)
+	arr, free := jsutil.SliceToTypedArray(data)
 	gl.Call("bufferSubData", int(arrayBuffer), 0, arr)
-	arr.Release()
+	free()
 }
 
 func (c *context) elementArrayBufferSubData(data []uint16) {
 	c.ensureGL()
 	gl := c.gl
-	arr := js.TypedArrayOf(data)
+	arr, free := jsutil.SliceToTypedArray(data)
 	gl.Call("bufferSubData", int(elementArrayBuffer), 0, arr)
-	arr.Release()
+	free()
 }
 
 func (c *context) deleteBuffer(b buffer) {
@@ -469,7 +501,7 @@ func (c *context) getShaderPrecisionFormatPrecision() int {
 	c.ensureGL()
 	gl := c.gl
 	r := gl.Call("getShaderPrecisionFormat", js.ValueOf(int(fragmentShader)), highFloat)
-	if r != js.Null() {
+	if !jsutil.Equal(r, js.Null()) {
 		p := r.Get("precision")
 		if p.Type() == js.TypeNumber {
 			return p.Int()

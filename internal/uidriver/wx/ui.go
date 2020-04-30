@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build ignore
 // +build js
 
 package wx
@@ -20,37 +21,36 @@ import (
 	"image"
 	"log"
 	"runtime"
+	"strconv"
 	"syscall/js"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/internal/devicescale"
 	"github.com/hajimehoshi/ebiten/internal/driver"
 )
 
-var canvas js.Value
-
 type UserInterface struct {
 	width                int
 	height               int
 	scale                float64
-	fullscreen           bool
 	runnableInBackground bool
 	vsync                bool
 
 	sizeChanged bool
-	windowFocus bool
-	pageVisible bool
 	contextLost bool
 
 	lastActualScale float64
 
 	context driver.UIContext
 	input   Input
+
+	// pseudoScale is a value to store 'scale'. This doesn't affect actual rendering.
+	// This is for backward compatibility.
+	pseudoScale float64
 }
 
 var theUI = &UserInterface{
 	sizeChanged: true,
-	windowFocus: true,
-	pageVisible: true,
 	vsync:       true,
 }
 
@@ -65,6 +65,7 @@ func Get() *UserInterface {
 var (
 	window                = js.Global().Get("window")
 	document              = js.Global().Get("document")
+	canvas                js.Value
 	requestAnimationFrame = js.Global().Get("requestAnimationFrame")
 	setTimeout            = js.Global().Get("setTimeout")
 )
@@ -74,23 +75,23 @@ func (u *UserInterface) ScreenSizeInFullscreen() (int, int) {
 }
 
 func (u *UserInterface) SetScreenSize(width, height int) {
-	u.setScreenSize(width, height, u.scale, u.fullscreen)
+	u.setScreenSize(width, height)
 }
 
 func (u *UserInterface) SetScreenScale(scale float64) {
-	u.setScreenSize(u.width, u.height, scale, u.fullscreen)
+	u.pseudoScale = scale
 }
 
 func (u *UserInterface) ScreenScale() float64 {
-	return u.scale
+	return u.pseudoScale
 }
 
 func (u *UserInterface) SetFullscreen(fullscreen bool) {
-	u.setScreenSize(u.width, u.height, u.scale, fullscreen)
+	// Do nothing
 }
 
 func (u *UserInterface) IsFullscreen() bool {
-	return u.fullscreen
+	return false
 }
 
 func (u *UserInterface) SetRunnableInBackground(runnableInBackground bool) {
@@ -117,20 +118,25 @@ func (u *UserInterface) adjustPosition(x, y int) (int, int) {
 	rect := canvas.Call("getBoundingClientRect")
 	x -= rect.Get("left").Int()
 	y -= rect.Get("top").Int()
-	scale := u.getScale()
-	return int(float64(x) / scale), int(float64(y) / scale)
+	s := u.scale
+	return int(float64(x) / s), int(float64(y) / s)
 }
 
 func (u *UserInterface) IsCursorVisible() bool {
-	return false
+	// The initial value is an empty string, so don't compare with "auto" here.
+	return canvas.Get("style").Get("cursor").String() != "none"
 }
 
 func (u *UserInterface) SetCursorVisible(visible bool) {
-	// Do nothing
+	if visible {
+		canvas.Get("style").Set("cursor", "auto")
+	} else {
+		canvas.Get("style").Set("cursor", "none")
+	}
 }
 
 func (u *UserInterface) SetWindowTitle(title string) {
-	// Do nothing
+	//document.Set("title", title)
 }
 
 func (u *UserInterface) SetWindowIcon(iconImages []image.Image) {
@@ -157,30 +163,13 @@ func (u *UserInterface) DeviceScaleFactor() float64 {
 	return devicescale.GetAt(0, 0)
 }
 
-func (u *UserInterface) getScale() float64 {
-	if !u.fullscreen {
-		return u.scale
-	}
-
-	bw := window.Get("innerWidth").Float()
-	bh := window.Get("innerHeight").Float()
-
-	sw := bw / float64(u.width)
-	sh := bh / float64(u.height)
-	if sw > sh {
-		return sh
-	}
-	return sw
-}
-
 func (u *UserInterface) actualScreenScale() float64 {
 	// CSS imageRendering property seems useful to enlarge the screen,
 	// but doesn't work in some cases (#306):
 	// * Chrome just after restoring the lost context
 	// * Safari
 	// Let's use the devicePixelRatio as it is here.
-	devicePixelRatio := js.Global().Get("window").Get("devicePixelRatio").Float()
-	return u.getScale() * devicePixelRatio
+	return u.scale * devicescale.GetAt(0, 0)
 }
 
 func (u *UserInterface) updateSize() {
@@ -197,7 +186,17 @@ func (u *UserInterface) updateSize() {
 }
 
 func (u *UserInterface) suspended() bool {
-	return !u.runnableInBackground && (!u.windowFocus || !u.pageVisible)
+	if u.runnableInBackground {
+		return false
+	}
+
+	if !document.Call("hasFocus").Bool() {
+		return true
+	}
+	if document.Get("hidden").Bool() {
+		return true
+	}
+	return false
 }
 
 func (u *UserInterface) update() error {
@@ -227,6 +226,7 @@ func (u *UserInterface) loop(context driver.UIContext) <-chan error {
 			requestAnimationFrame.Invoke(cf)
 			return nil
 		}
+
 		if err := u.update(); err != nil {
 			ch <- err
 			close(ch)
@@ -245,85 +245,70 @@ func (u *UserInterface) loop(context driver.UIContext) <-chan error {
 	go func() {
 		f(js.Value{}, nil)
 	}()
+
+	// Run another loop to watch suspended() as the above update function is never called when the tab is hidden.
+	// To check the document's visiblity, visibilitychange event should usually be used. However, this event is
+	// not reliable and sometimes it is not fired (#961). Then, watch the state regularly instead.
+	go func() {
+		t := time.NewTicker(100 * time.Millisecond)
+		defer t.Stop()
+		for range t.C {
+			if u.suspended() {
+				u.context.SuspendAudio()
+			} else {
+				u.context.ResumeAudio()
+			}
+		}
+	}()
+
 	return ch
 }
 
 func init() {
-	/*
-			if document.Get("body") == js.Null() {
-				ch := make(chan struct{})
-				window.Call("addEventListener", "load", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-					close(ch)
-					return nil
-				}))
-				<-ch
-			}
+	// if jsutil.Equal(document.Get("body"), js.Null()) {
+	// 	ch := make(chan struct{})
+	// 	window.Call("addEventListener", "load", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	// 		close(ch)
+	// 		return nil
+	// 	}))
+	// 	<-ch
+	// }
 
-			window.Call("addEventListener", "focus", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-				theUI.windowFocus = true
-				if theUI.suspended() {
-					theUI.context.SuspendAudio()
-				} else {
-					theUI.context.ResumeAudio()
-				}
-				return nil
-			}))
-			window.Call("addEventListener", "blur", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-				theUI.windowFocus = false
-				if theUI.suspended() {
-					theUI.context.SuspendAudio()
-				} else {
-					theUI.context.ResumeAudio()
-				}
-				return nil
-			}))
-			document.Call("addEventListener", "visibilitychange", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-				theUI.pageVisible = !document.Get("hidden").Bool()
-				if theUI.suspended() {
-					theUI.context.SuspendAudio()
-				} else {
-					theUI.context.ResumeAudio()
-				}
-				return nil
-			}))
-			window.Call("addEventListener", "resize", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-				theUI.updateScreenSize()
-				return nil
-			}))
+	// window.Call("addEventListener", "resize", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	// 	theUI.updateScreenSize()
+	// 	return nil
+	// }))
 
+	// Adjust the initial scale to 1.
+	// https://developer.mozilla.org/en/docs/Mozilla/Mobile/Viewport_meta_tag
+	// meta := document.Call("createElement", "meta")
+	// meta.Set("name", "viewport")
+	// meta.Set("content", "width=device-width, initial-scale=1")
+	// document.Get("head").Call("appendChild", meta)
 
-		// Adjust the initial scale to 1.
-		// https://developer.mozilla.org/en/docs/Mozilla/Mobile/Viewport_meta_tag
-		meta := document.Call("createElement", "meta")
-		meta.Set("name", "viewport")
-		meta.Set("content", "width=device-width, initial-scale=1")
-		document.Get("head").Call("appendChild", meta)
-
-		canvas = document.Call("createElement", "canvas")
-		canvas.Set("width", 16)
-		canvas.Set("height", 16)
-		document.Get("body").Call("appendChild", canvas)
-
-		htmlStyle := document.Get("documentElement").Get("style")
-		htmlStyle.Set("height", "100%")
-		htmlStyle.Set("margin", "0")
-		htmlStyle.Set("padding", "0")
-
-		bodyStyle := document.Get("body").Get("style")
-		bodyStyle.Set("backgroundColor", "#000")
-		bodyStyle.Set("position", "relative")
-		bodyStyle.Set("height", "100%")
-		bodyStyle.Set("margin", "0")
-		bodyStyle.Set("padding", "0")
-		bodyStyle.Set("display", "flex")
-		bodyStyle.Set("alignItems", "center")
-		bodyStyle.Set("justifyContent", "center")
-	*/
 	canvas = js.Global().Get("canvas")
+	// canvas = document.Call("createElement", "canvas")
+	// canvas.Set("width", 16)
+	// canvas.Set("height", 16)
+	// document.Get("body").Call("appendChild", canvas)
+
+	// htmlStyle := document.Get("documentElement").Get("style")
+	// htmlStyle.Set("height", "100%")
+	// htmlStyle.Set("margin", "0")
+	// htmlStyle.Set("padding", "0")
+
+	// bodyStyle := document.Get("body").Get("style")
+	// bodyStyle.Set("backgroundColor", "#000")
+	// bodyStyle.Set("position", "relative")
+	// bodyStyle.Set("height", "100%")
+	// bodyStyle.Set("margin", "0")
+	// bodyStyle.Set("padding", "0")
+	// bodyStyle.Set("display", "flex")
+	// bodyStyle.Set("alignItems", "center")
+	// bodyStyle.Set("justifyContent", "center")
 
 	// TODO: This is OK as long as the game is in an independent iframe.
 	// What if the canvas is embedded in a HTML directly?
-
 	// document.Get("body").Call("addEventListener", "click", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 	// 	canvas.Call("focus")
 	// 	return nil
@@ -338,6 +323,9 @@ func init() {
 
 	// // Keyboard
 	// canvas.Call("addEventListener", "keydown", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	// 	// Focus the canvas explicitly to activate tha game (#961).
+	// 	canvas.Call("focus")
+
 	// 	e := args[0]
 	// 	// Don't 'preventDefault' on keydown events or keypress events wouldn't work (#715).
 	// 	theUI.input.Update(e)
@@ -358,6 +346,9 @@ func init() {
 
 	// // Mouse
 	// canvas.Call("addEventListener", "mousedown", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	// 	// Focus the canvas explicitly to activate tha game (#961).
+	// 	canvas.Call("focus")
+
 	// 	e := args[0]
 	// 	e.Call("preventDefault")
 	// 	theUI.input.Update(e)
@@ -384,6 +375,9 @@ func init() {
 
 	// Touch
 	canvas.Call("addEventListener", "touchstart", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		// Focus the canvas explicitly to activate tha game (#961).
+		canvas.Call("focus")
+
 		e := args[0]
 		e.Call("preventDefault")
 		theUI.input.Update(e)
@@ -402,34 +396,37 @@ func init() {
 		return nil
 	}))
 
-	// // Gamepad
-	// window.Call("addEventListener", "gamepadconnected", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-	// 	// Do nothing.
-	// 	return nil
-	// }))
+	// Gamepad
+	window.Call("addEventListener", "gamepadconnected", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		// Do nothing.
+		return nil
+	}))
 
-	// canvas.Call("addEventListener", "contextmenu", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-	// 	e := args[0]
-	// 	e.Call("preventDefault")
-	// 	return nil
-	// }))
+	canvas.Call("addEventListener", "contextmenu", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		e := args[0]
+		e.Call("preventDefault")
+		return nil
+	}))
 
 	// Context
-	// canvas.Call("addEventListener", "webglcontextlost", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-	// 	e := args[0]
-	// 	e.Call("preventDefault")
-	// 	theUI.contextLost = true
-	// 	return nil
-	// }))
-	// canvas.Call("addEventListener", "webglcontextrestored", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-	// 	theUI.contextLost = false
-	// 	return nil
-	// }))
+	canvas.Call("addEventListener", "webglcontextlost", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		e := args[0]
+		e.Call("preventDefault")
+		theUI.contextLost = true
+		return nil
+	}))
+	canvas.Call("addEventListener", "webglcontextrestored", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		theUI.contextLost = false
+		return nil
+	}))
 }
 
 func (u *UserInterface) Run(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics) error {
-	//	document.Set("title", title)
-	u.setScreenSize(width, height, scale, u.fullscreen)
+	// scale is ignored.
+
+	//document.Set("title", title)
+	u.setScreenSize(width, height)
+	u.pseudoScale = scale
 	canvas.Call("focus")
 	ch := u.loop(context)
 	if runtime.GOARCH == "wasm" {
@@ -450,29 +447,36 @@ func (u *UserInterface) RunWithoutMainLoop(width, height int, scale float64, tit
 	panic("js: RunWithoutMainLoop is not implemented")
 }
 
-func (u *UserInterface) setScreenSize(width, height int, scale float64, fullscreen bool) bool {
-	if u.width == width && u.height == height &&
-		u.scale == scale && fullscreen == u.fullscreen {
+func (u *UserInterface) setScreenSize(width, height int) bool {
+	if u.width == width && u.height == height {
 		return false
 	}
 	u.width = width
 	u.height = height
-	u.scale = scale
-	u.fullscreen = fullscreen
 	u.updateScreenSize()
 	return true
 }
 
 func (u *UserInterface) updateScreenSize() {
+	body := document.Get("body")
+	bw := body.Get("clientWidth").Float()
+	bh := body.Get("clientHeight").Float()
+	sw := bw / float64(u.width)
+	sh := bh / float64(u.height)
+	if sw > sh {
+		u.scale = sh
+	} else {
+		u.scale = sw
+	}
+
 	canvas.Set("width", int(float64(u.width)*u.actualScreenScale()))
 	canvas.Set("height", int(float64(u.height)*u.actualScreenScale()))
-	// canvasStyle := canvas.Get("style")
+	canvasStyle := canvas.Get("style")
 
-	// s := u.getScale()
-	// cssWidth := int(float64(u.width) * s)
-	// cssHeight := int(float64(u.height) * s)
-	// canvasStyle.Set("width", strconv.Itoa(cssWidth)+"px")
-	// canvasStyle.Set("height", strconv.Itoa(cssHeight)+"px")
+	cssWidth := int(float64(u.width) * u.scale)
+	cssHeight := int(float64(u.height) * u.scale)
+	canvasStyle.Set("width", strconv.Itoa(cssWidth)+"px")
+	canvasStyle.Set("height", strconv.Itoa(cssHeight)+"px")
 
 	u.sizeChanged = true
 }
