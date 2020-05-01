@@ -6,6 +6,7 @@ require (
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20200222043503-6f7a984d4dc4
 	github.com/gofrs/flock v0.7.1
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
+	github.com/gopherjs/gopherjs v0.0.0-20200217142428-fce0ec30dd00 // indirect
 	github.com/hajimehoshi/bitmapfont v1.2.0
 	github.com/hajimehoshi/go-mp3 v0.2.1
 	github.com/hajimehoshi/oto v0.5.4
