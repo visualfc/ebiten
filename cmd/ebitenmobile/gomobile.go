@@ -67,15 +67,6 @@ func exe(filename string) string {
 	return filename
 }
 
-// exe adds the .exe extension to the given filename.
-// Without .exe, the executable won't be found by exec.LookPath on Windows (#1096).
-func exe(filename string) string {
-	if runtime.GOOS == "windows" {
-		return filename + ".exe"
-	}
-	return filename
-}
-
 func prepareGomobileCommands() error {
 	tmp, err := ioutil.TempDir("", "ebitenmobile-")
 	if err != nil {

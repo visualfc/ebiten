@@ -12,9 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+<<<<<<< HEAD
 // +build android ios,386 ios,amd64 ios,ebitengl
 
 package mobile
+=======
+<<<<<<< HEAD:internal/uidriver/glfw/graphics_opengl.go
+// +build freebsd linux windows ebitengl
+// +build !js
+
+package glfw
+=======
+// +build android ios,386 ios,amd64 ios,ebitengl
+
+package mobile
+>>>>>>> v1.11.1:internal/uidriver/mobile/graphics_opengl.go
+>>>>>>> v1.11.1
 
 import (
 	"github.com/hajimehoshi/ebiten/internal/driver"
