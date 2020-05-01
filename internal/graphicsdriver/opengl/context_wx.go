@@ -301,9 +301,17 @@ func (c *context) setViewportImpl(width, height int) {
 func (c *context) deleteFramebuffer(f framebufferNative) {
 	c.ensureGL()
 	gl := c.gl
-	if !gl.Call("isFramebuffer", js.Value(f)).Bool() {
-		return
+
+	// wx hack
+	b := gl.Call("isFramebuffer", js.Value(f))
+	if !jsutil.Equal(b, js.Null()) {
+		if b.Type() == js.TypeBoolean && !b.Bool() {
+			return
+		}
 	}
+	// if !gl.Call("isFramebuffer", js.Value(f)).Bool() {
+	// 	return
+	// }
 	// If a framebuffer to be deleted is bound, a newly bound framebuffer
 	// will be a default framebuffer.
 	// https://www.khronos.org/opengles/sdk/docs/man/xhtml/glDeleteFramebuffers.xml
@@ -356,9 +364,16 @@ func (c *context) newProgram(shaders []shader, attributes []string) (program, er
 	}
 
 	gl.Call("linkProgram", v)
-	if !gl.Call("getProgramParameter", v, linkStatus).Bool() {
-		return program{}, errors.New("opengl: program error")
+	// wx hack
+	b := gl.Call("getProgramParameter", v, linkStatus)
+	if !jsutil.Equal(b, js.Null()) && b.Type() == js.TypeBoolean {
+		if !b.Bool() {
+			return program{}, errors.New("opengl: program error")
+		}
 	}
+	// if !gl.Call("getProgramParameter", v, linkStatus).Bool() {
+	// 	return program{}, errors.New("opengl: program error")
+	// }
 
 	id := c.lastProgramID
 	c.lastProgramID++

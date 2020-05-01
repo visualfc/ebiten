@@ -11,8 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-// +build ignore
+/// +build ignore
 // +build js
 
 package wx
@@ -21,7 +20,6 @@ import (
 	"image"
 	"log"
 	"runtime"
-	"strconv"
 	"syscall/js"
 	"time"
 
@@ -124,15 +122,16 @@ func (u *UserInterface) adjustPosition(x, y int) (int, int) {
 
 func (u *UserInterface) IsCursorVisible() bool {
 	// The initial value is an empty string, so don't compare with "auto" here.
-	return canvas.Get("style").Get("cursor").String() != "none"
+	//return canvas.Get("style").Get("cursor").String() != "none"
+	return false
 }
 
 func (u *UserInterface) SetCursorVisible(visible bool) {
-	if visible {
-		canvas.Get("style").Set("cursor", "auto")
-	} else {
-		canvas.Get("style").Set("cursor", "none")
-	}
+	// if visible {
+	// 	canvas.Get("style").Set("cursor", "auto")
+	// } else {
+	// 	canvas.Get("style").Set("cursor", "none")
+	// }
 }
 
 func (u *UserInterface) SetWindowTitle(title string) {
@@ -190,12 +189,12 @@ func (u *UserInterface) suspended() bool {
 		return false
 	}
 
-	if !document.Call("hasFocus").Bool() {
-		return true
-	}
-	if document.Get("hidden").Bool() {
-		return true
-	}
+	// if !document.Call("hasFocus").Bool() {
+	// 	return true
+	// }
+	// if document.Get("hidden").Bool() {
+	// 	return true
+	// }
 	return false
 }
 
@@ -397,28 +396,28 @@ func init() {
 	}))
 
 	// Gamepad
-	window.Call("addEventListener", "gamepadconnected", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		// Do nothing.
-		return nil
-	}))
+	// window.Call("addEventListener", "gamepadconnected", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	// 	// Do nothing.
+	// 	return nil
+	// }))
 
-	canvas.Call("addEventListener", "contextmenu", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		e := args[0]
-		e.Call("preventDefault")
-		return nil
-	}))
+	// canvas.Call("addEventListener", "contextmenu", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	// 	e := args[0]
+	// 	e.Call("preventDefault")
+	// 	return nil
+	// }))
 
-	// Context
-	canvas.Call("addEventListener", "webglcontextlost", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		e := args[0]
-		e.Call("preventDefault")
-		theUI.contextLost = true
-		return nil
-	}))
-	canvas.Call("addEventListener", "webglcontextrestored", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		theUI.contextLost = false
-		return nil
-	}))
+	// // Context
+	// canvas.Call("addEventListener", "webglcontextlost", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	// 	e := args[0]
+	// 	e.Call("preventDefault")
+	// 	theUI.contextLost = true
+	// 	return nil
+	// }))
+	// canvas.Call("addEventListener", "webglcontextrestored", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	// 	theUI.contextLost = false
+	// 	return nil
+	// }))
 }
 
 func (u *UserInterface) Run(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics) error {
@@ -458,9 +457,14 @@ func (u *UserInterface) setScreenSize(width, height int) bool {
 }
 
 func (u *UserInterface) updateScreenSize() {
-	body := document.Get("body")
-	bw := body.Get("clientWidth").Float()
-	bh := body.Get("clientHeight").Float()
+	canvas.Set("width", int(float64(u.width)*u.actualScreenScale()))
+	canvas.Set("height", int(float64(u.height)*u.actualScreenScale()))
+	// wx hack
+	bw := window.Get("innerWidth").Float()
+	bh := window.Get("innerHeight").Float()
+	// body := document.Get("body")
+	// bw := body.Get("clientWidth").Float()
+	// bh := body.Get("clientHeight").Float()
 	sw := bw / float64(u.width)
 	sh := bh / float64(u.height)
 	if sw > sh {
@@ -469,14 +473,14 @@ func (u *UserInterface) updateScreenSize() {
 		u.scale = sw
 	}
 
-	canvas.Set("width", int(float64(u.width)*u.actualScreenScale()))
-	canvas.Set("height", int(float64(u.height)*u.actualScreenScale()))
-	canvasStyle := canvas.Get("style")
+	// canvas.Set("width", int(float64(u.width)*u.actualScreenScale()))
+	// canvas.Set("height", int(float64(u.height)*u.actualScreenScale()))
+	// canvasStyle := canvas.Get("style")
 
-	cssWidth := int(float64(u.width) * u.scale)
-	cssHeight := int(float64(u.height) * u.scale)
-	canvasStyle.Set("width", strconv.Itoa(cssWidth)+"px")
-	canvasStyle.Set("height", strconv.Itoa(cssHeight)+"px")
+	// cssWidth := int(float64(u.width) * u.scale)
+	// cssHeight := int(float64(u.height) * u.scale)
+	// canvasStyle.Set("width", strconv.Itoa(cssWidth)+"px")
+	// canvasStyle.Set("height", strconv.Itoa(cssHeight)+"px")
 
 	u.sizeChanged = true
 }
