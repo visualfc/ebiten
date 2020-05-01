@@ -23,7 +23,7 @@ import (
 	"runtime"
 )
 
-const gomobileHash = "597adff16ade9d88626f8caea514bb189b8c74ee"
+const gomobileHash = "4c31acba000778d337c0e4f32091cc923b3363d2"
 
 func runCommand(command string, args []string, env []string) error {
 	if buildX || buildN {
@@ -55,8 +55,16 @@ func runGo(args ...string) error {
 	env := []string{
 		"GO111MODULE=on",
 	}
-	gocmd := filepath.Join(runtime.GOROOT(), "bin", "go")
-	return runCommand(gocmd, args, env)
+	return runCommand("go", args, env)
+}
+
+// exe adds the .exe extension to the given filename.
+// Without .exe, the executable won't be found by exec.LookPath on Windows (#1096).
+func exe(filename string) string {
+	if runtime.GOOS == "windows" {
+		return filename + ".exe"
+	}
+	return filename
 }
 
 // exe adds the .exe extension to the given filename.

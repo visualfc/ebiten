@@ -21,7 +21,7 @@ import (
 	"image"
 	"sync"
 
-	"github.com/go-gl/glfw/v3.2/glfw"
+	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
 type windows map[*glfw.Window]*Window
@@ -94,6 +94,10 @@ func (w *Window) GetAttrib(attrib Hint) int {
 	return w.w.GetAttrib(glfw.Hint(attrib))
 }
 
+func (w *Window) SetAttrib(attrib Hint, value int) {
+	w.w.SetAttrib(glfw.Hint(attrib), value)
+}
+
 func (w *Window) GetCursorPos() (x, y float64) {
 	return w.w.GetCursorPos()
 }
@@ -126,8 +130,20 @@ func (w *Window) GetSize() (width, height int) {
 	return w.w.GetSize()
 }
 
+func (w *Window) Iconify() {
+	w.w.Iconify()
+}
+
 func (w *Window) MakeContextCurrent() {
 	w.w.MakeContextCurrent()
+}
+
+func (w *Window) Maximize() {
+	w.w.Maximize()
+}
+
+func (w *Window) Restore() {
+	w.w.Restore()
 }
 
 func (w *Window) SetCharModsCallback(cbfun CharModsCallback) (previous CharModsCallback) {
@@ -231,12 +247,24 @@ func CreateWindow(width, height int, title string, monitor *Monitor, share *Wind
 	return theWindows.add(w), nil
 }
 
-func GetJoystickAxes(joy Joystick) []float32 {
-	return glfw.GetJoystickAxes(glfw.Joystick(joy))
+func (j Joystick) GetGUID() string {
+	return glfw.Joystick(j).GetGUID()
 }
 
-func GetJoystickButtons(joy Joystick) []byte {
-	return glfw.GetJoystickButtons(glfw.Joystick(joy))
+func (j Joystick) GetName() string {
+	return glfw.Joystick(j).GetName()
+}
+
+func (j Joystick) GetAxes() []float32 {
+	return glfw.Joystick(j).GetAxes()
+}
+
+func (j Joystick) GetButtons() []Action {
+	var bs []Action
+	for _, b := range glfw.Joystick(j).GetButtons() {
+		bs = append(bs, Action(b))
+	}
+	return bs
 }
 
 func GetMonitors() []*Monitor {
@@ -263,23 +291,23 @@ func Init() error {
 	return glfw.Init()
 }
 
-func JoystickPresent(joy Joystick) bool {
-	return glfw.JoystickPresent(glfw.Joystick(joy))
+func (j Joystick) Present() bool {
+	return glfw.Joystick(j).Present()
 }
 
 func PollEvents() {
 	glfw.PollEvents()
 }
 
-func SetMonitorCallback(cbfun func(monitor *Monitor, event MonitorEvent)) {
-	var gcb func(monitor *glfw.Monitor, event glfw.MonitorEvent)
+func SetMonitorCallback(cbfun func(monitor *Monitor, event PeripheralEvent)) {
+	var gcb func(monitor *glfw.Monitor, event glfw.PeripheralEvent)
 	if cbfun != nil {
-		gcb = func(monitor *glfw.Monitor, event glfw.MonitorEvent) {
+		gcb = func(monitor *glfw.Monitor, event glfw.PeripheralEvent) {
 			var m *Monitor
 			if monitor != nil {
 				m = &Monitor{monitor}
 			}
-			cbfun(m, MonitorEvent(event))
+			cbfun(m, PeripheralEvent(event))
 		}
 	}
 	glfw.SetMonitorCallback(gcb)

@@ -45,6 +45,8 @@ type Image struct {
 	screen         bool
 	id             int
 
+	bufferedRP []*driver.ReplacePixelsArgs
+
 	lastCommand lastCommand
 }
 
@@ -88,6 +90,18 @@ func NewScreenFramebufferImage(width, height int) *Image {
 	}
 	theCommandQueue.Enqueue(c)
 	return i
+}
+
+func (i *Image) resolveBufferedReplacePixels() {
+	if len(i.bufferedRP) == 0 {
+		return
+	}
+	c := &replacePixelsCommand{
+		dst:  i,
+		args: i.bufferedRP,
+	}
+	theCommandQueue.Enqueue(c)
+	i.bufferedRP = nil
 }
 
 func (i *Image) Dispose() {
@@ -134,6 +148,9 @@ func (i *Image) DrawTriangles(src *Image, vertices []float32, indices []uint16, 
 		}
 	}
 
+	src.resolveBufferedReplacePixels()
+	i.resolveBufferedReplacePixels()
+
 	theCommandQueue.EnqueueDrawTrianglesCommand(i, src, vertices, indices, clr, mode, filter, address)
 
 	if i.lastCommand == lastCommandNone && !i.screen {
@@ -145,14 +162,17 @@ func (i *Image) DrawTriangles(src *Image, vertices []float32, indices []uint16, 
 
 // Pixels returns the image's pixels.
 // Pixels might return nil when OpenGL error happens.
-func (i *Image) Pixels() []byte {
+func (i *Image) Pixels() ([]byte, error) {
+	i.resolveBufferedReplacePixels()
 	c := &pixelsCommand{
 		result: nil,
 		img:    i,
 	}
 	theCommandQueue.Enqueue(c)
-	theCommandQueue.Flush()
-	return c.result
+	if err := theCommandQueue.Flush(); err != nil {
+		return nil, err
+	}
+	return c.result, nil
 }
 
 func (i *Image) ReplacePixels(pixels []byte, x, y, width, height int) {
@@ -162,15 +182,13 @@ func (i *Image) ReplacePixels(pixels []byte, x, y, width, height int) {
 			panic("graphicscommand: ReplacePixels for a part after DrawTriangles is forbidden")
 		}
 	}
-	c := &replacePixelsCommand{
-		dst:    i,
-		pixels: pixels,
-		x:      x,
-		y:      y,
-		width:  width,
-		height: height,
-	}
-	theCommandQueue.Enqueue(c)
+	i.bufferedRP = append(i.bufferedRP, &driver.ReplacePixelsArgs{
+		Pixels: pixels,
+		X:      x,
+		Y:      y,
+		Width:  width,
+		Height: height,
+	})
 	i.lastCommand = lastCommandReplacePixels
 }
 
@@ -191,8 +209,10 @@ func (i *Image) IsInvalidated() bool {
 // Dump dumps the image to the specified path.
 // In the path, '*' is replaced with the image's ID.
 //
+// If blackbg is true, any alpha values in the dumped image will be 255.
+//
 // This is for testing usage.
-func (i *Image) Dump(path string) error {
+func (i *Image) Dump(path string, blackbg bool) error {
 	// Screen image cannot be dumped.
 	if i.screen {
 		return nil
@@ -205,8 +225,19 @@ func (i *Image) Dump(path string) error {
 	}
 	defer f.Close()
 
+	pix, err := i.Pixels()
+	if err != nil {
+		return err
+	}
+
+	if blackbg {
+		for i := 0; i < len(pix)/4; i++ {
+			pix[4*i+3] = 0xff
+		}
+	}
+
 	if err := png.Encode(f, &image.RGBA{
-		Pix:    i.Pixels(),
+		Pix:    pix,
 		Stride: 4 * i.width,
 		Rect:   image.Rect(0, 0, i.width, i.height),
 	}); err != nil {

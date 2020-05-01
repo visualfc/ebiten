@@ -18,6 +18,9 @@
 package jsutil
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
 	"syscall/js"
 	"unsafe"
 
@@ -84,4 +87,22 @@ var (
 
 func init() {
 	id = gojs.Global.Call("eval", "(function(x) { return x; })")
+}
+
+func sliceToByteSlice(s interface{}) (bs []byte) {
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, s)
+	return buf.Bytes()
+}
+
+func CopySliceToJS(dst js.Value, src interface{}) {
+	switch s := src.(type) {
+	case []uint8:
+		js.CopyBytesToJS(dst, s)
+	case []int8, []int16, []int32, []uint16, []uint32, []float32, []float64:
+		a := js.Global().Get("Uint8Array").New(dst.Get("buffer"), dst.Get("byteOffset"), dst.Get("byteLength"))
+		js.CopyBytesToJS(a, sliceToByteSlice(s))
+	default:
+		panic(fmt.Sprintf("jsutil: unexpected value at CopySliceToJS: %T", s))
+	}
 }

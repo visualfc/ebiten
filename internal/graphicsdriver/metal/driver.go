@@ -293,13 +293,14 @@ type Driver struct {
 
 	screenDrawable ca.MetalDrawable
 
-	vb mtl.Buffer
-	ib mtl.Buffer
-
+	vb  mtl.Buffer
+	ib  mtl.Buffer
 	src *Image
 	dst *Image
 
+	transparent  bool
 	maxImageSize int
+	drawCalled   bool
 
 	t *thread.Thread
 
@@ -335,7 +336,7 @@ func (d *Driver) End() {
 	})
 }
 
-func (d *Driver) SetWindow(window uintptr) {
+func (d *Driver) SetWindow(window unsafe.Pointer) {
 	d.t.Call(func() error {
 		// Note that [NSApp mainWindow] returns nil when the window is borderless.
 		// Then the window is needed to be given explicitly.
@@ -361,10 +362,6 @@ func (d *Driver) SetVertices(vertices []float32, indices []uint16) {
 		d.ib = d.view.getMTLDevice().MakeBufferWithBytes(unsafe.Pointer(&indices[0]), unsafe.Sizeof(indices[0])*uintptr(len(indices)), resourceStorageMode)
 		return nil
 	})
-}
-
-func (d *Driver) Flush() {
-	// On Metal, flushing command buffers only once is enough except for manipulating pixels. Do not call flush.
 }
 
 func (d *Driver) flush(wait bool, present bool) {
@@ -438,6 +435,10 @@ func (d *Driver) NewScreenFramebufferImage(width, height int) (driver.Image, err
 	}, nil
 }
 
+func (d *Driver) SetTransparent(transparent bool) {
+	d.transparent = transparent
+}
+
 func (d *Driver) Reset() error {
 	if err := d.t.Call(func() error {
 		if d.cq != (mtl.CommandQueue{}) {
@@ -452,6 +453,9 @@ func (d *Driver) Reset() error {
 
 		if err := d.view.reset(); err != nil {
 			return err
+		}
+		if d.transparent {
+			d.view.ml.SetOpaque(false)
 		}
 
 		replaces := map[string]string{
@@ -577,17 +581,17 @@ func (d *Driver) Reset() error {
 }
 
 func (d *Driver) Draw(indexLen int, indexOffset int, mode driver.CompositeMode, colorM *affine.ColorM, filter driver.Filter, address driver.Address) error {
+	d.drawCalled = true
+
 	if err := d.t.Call(func() error {
 		d.view.update()
 
 		rpd := mtl.RenderPassDescriptor{}
-		if d.dst.screen {
-			rpd.ColorAttachments[0].LoadAction = mtl.LoadActionDontCare
-			rpd.ColorAttachments[0].StoreAction = mtl.StoreActionStore
-		} else {
-			rpd.ColorAttachments[0].LoadAction = mtl.LoadActionLoad
-			rpd.ColorAttachments[0].StoreAction = mtl.StoreActionStore
-		}
+		// Even though the destination pixels are not used, mtl.LoadActionDontCare might cause glitches
+		// (#1019). Always using mtl.LoadActionLoad is safe.
+		rpd.ColorAttachments[0].LoadAction = mtl.LoadActionLoad
+		rpd.ColorAttachments[0].StoreAction = mtl.StoreActionStore
+
 		var t mtl.Texture
 		if d.dst.screen {
 			if d.screenDrawable == (ca.MetalDrawable{}) {
@@ -805,14 +809,20 @@ func (i *Image) SetAsSource() {
 	})
 }
 
-func (i *Image) ReplacePixels(pixels []byte, x, y, width, height int) {
-	i.driver.flush(true, false)
+func (i *Image) ReplacePixels(args []*driver.ReplacePixelsArgs) {
+	d := i.driver
+	if d.drawCalled {
+		d.flush(true, false)
+		d.drawCalled = false
+	}
 
-	i.driver.t.Call(func() error {
-		i.texture.ReplaceRegion(mtl.Region{
-			Origin: mtl.Origin{X: x, Y: y, Z: 0},
-			Size:   mtl.Size{Width: width, Height: height, Depth: 1},
-		}, 0, unsafe.Pointer(&pixels[0]), 4*width)
+	d.t.Call(func() error {
+		for _, a := range args {
+			i.texture.ReplaceRegion(mtl.Region{
+				Origin: mtl.Origin{X: a.X, Y: a.Y, Z: 0},
+				Size:   mtl.Size{Width: a.Width, Height: a.Height, Depth: 1},
+			}, 0, unsafe.Pointer(&a.Pixels[0]), 4*a.Width)
+		}
 		return nil
 	})
 }

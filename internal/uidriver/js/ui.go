@@ -17,36 +17,30 @@
 package js
 
 import (
-	"image"
 	"log"
 	"runtime"
-	"strconv"
 	"syscall/js"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/internal/devicescale"
 	"github.com/hajimehoshi/ebiten/internal/driver"
+	"github.com/hajimehoshi/ebiten/internal/graphicsdriver/opengl"
+	"github.com/hajimehoshi/ebiten/internal/hooks"
 	"github.com/hajimehoshi/ebiten/internal/jsutil"
 )
 
 type UserInterface struct {
-	width                int
-	height               int
-	scale                float64
-	runnableInBackground bool
-	vsync                bool
+	runnableOnUnfocused bool
+	vsync               bool
+	running             bool
 
 	sizeChanged bool
 	contextLost bool
 
-	lastActualScale float64
+	lastDeviceScaleFactor float64
 
 	context driver.UIContext
 	input   Input
-
-	// pseudoScale is a value to store 'scale'. This doesn't affect actual rendering.
-	// This is for backward compatibility.
-	pseudoScale float64
 }
 
 var theUI = &UserInterface{
@@ -74,18 +68,6 @@ func (u *UserInterface) ScreenSizeInFullscreen() (int, int) {
 	return window.Get("innerWidth").Int(), window.Get("innerHeight").Int()
 }
 
-func (u *UserInterface) SetScreenSize(width, height int) {
-	u.setScreenSize(width, height)
-}
-
-func (u *UserInterface) SetScreenScale(scale float64) {
-	u.pseudoScale = scale
-}
-
-func (u *UserInterface) ScreenScale() float64 {
-	return u.pseudoScale
-}
-
 func (u *UserInterface) SetFullscreen(fullscreen bool) {
 	// Do nothing
 }
@@ -94,12 +76,16 @@ func (u *UserInterface) IsFullscreen() bool {
 	return false
 }
 
-func (u *UserInterface) SetRunnableInBackground(runnableInBackground bool) {
-	u.runnableInBackground = runnableInBackground
+func (u *UserInterface) IsFocused() bool {
+	return u.isFocused()
 }
 
-func (u *UserInterface) IsRunnableInBackground() bool {
-	return u.runnableInBackground
+func (u *UserInterface) SetRunnableOnUnfocused(runnableOnUnfocused bool) {
+	u.runnableOnUnfocused = runnableOnUnfocused
+}
+
+func (u *UserInterface) IsRunnableOnUnfocused() bool {
+	return u.runnableOnUnfocused
 }
 
 func (u *UserInterface) SetVsyncEnabled(enabled bool) {
@@ -110,24 +96,24 @@ func (u *UserInterface) IsVsyncEnabled() bool {
 	return u.vsync
 }
 
-func (u *UserInterface) ScreenPadding() (x0, y0, x1, y1 float64) {
-	return 0, 0, 0, 0
+func (u *UserInterface) CursorMode() driver.CursorMode {
+	if canvas.Get("style").Get("cursor").String() != "none" {
+		return driver.CursorModeVisible
+	}
+	return driver.CursorModeHidden
 }
 
-func (u *UserInterface) adjustPosition(x, y int) (int, int) {
-	rect := canvas.Call("getBoundingClientRect")
-	x -= rect.Get("left").Int()
-	y -= rect.Get("top").Int()
-	s := u.scale
-	return int(float64(x) / s), int(float64(y) / s)
-}
+func (u *UserInterface) SetCursorMode(mode driver.CursorMode) {
+	var visible bool
+	switch mode {
+	case driver.CursorModeVisible:
+		visible = true
+	case driver.CursorModeHidden:
+		visible = false
+	default:
+		return
+	}
 
-func (u *UserInterface) IsCursorVisible() bool {
-	// The initial value is an empty string, so don't compare with "auto" here.
-	return canvas.Get("style").Get("cursor").String() != "none"
-}
-
-func (u *UserInterface) SetCursorVisible(visible bool) {
 	if visible {
 		canvas.Get("style").Set("cursor", "auto")
 	} else {
@@ -135,76 +121,49 @@ func (u *UserInterface) SetCursorVisible(visible bool) {
 	}
 }
 
-func (u *UserInterface) SetWindowTitle(title string) {
-	document.Set("title", title)
-}
-
-func (u *UserInterface) SetWindowIcon(iconImages []image.Image) {
-	// Do nothing
-}
-
-func (u *UserInterface) IsWindowDecorated() bool {
-	return false
-}
-
-func (u *UserInterface) SetWindowDecorated(decorated bool) {
-	// Do nothing
-}
-
-func (u *UserInterface) IsWindowResizable() bool {
-	return false
-}
-
-func (u *UserInterface) SetWindowResizable(decorated bool) {
-	// Do nothing
-}
-
 func (u *UserInterface) DeviceScaleFactor() float64 {
 	return devicescale.GetAt(0, 0)
 }
 
-func (u *UserInterface) actualScreenScale() float64 {
-	// CSS imageRendering property seems useful to enlarge the screen,
-	// but doesn't work in some cases (#306):
-	// * Chrome just after restoring the lost context
-	// * Safari
-	// Let's use the devicePixelRatio as it is here.
-	return u.scale * devicescale.GetAt(0, 0)
-}
-
 func (u *UserInterface) updateSize() {
-	a := u.actualScreenScale()
-	if u.lastActualScale != a {
+	a := u.DeviceScaleFactor()
+	if u.lastDeviceScaleFactor != a {
 		u.updateScreenSize()
 	}
-	u.lastActualScale = a
+	u.lastDeviceScaleFactor = a
 
 	if u.sizeChanged {
 		u.sizeChanged = false
-		u.context.SetSize(u.width, u.height, a)
+		body := document.Get("body")
+		bw := body.Get("clientWidth").Float()
+		bh := body.Get("clientHeight").Float()
+		u.context.Layout(bw, bh)
 	}
 }
 
 func (u *UserInterface) suspended() bool {
-	if u.runnableInBackground {
+	if u.runnableOnUnfocused {
 		return false
 	}
+	return !u.isFocused()
+}
 
+func (u *UserInterface) isFocused() bool {
 	if !document.Call("hasFocus").Bool() {
-		return true
+		return false
 	}
 	if document.Get("hidden").Bool() {
-		return true
+		return false
 	}
-	return false
+	return true
 }
 
 func (u *UserInterface) update() error {
 	if u.suspended() {
-		u.context.SuspendAudio()
+		hooks.SuspendAudio()
 		return nil
 	}
-	u.context.ResumeAudio()
+	hooks.ResumeAudio()
 
 	u.input.UpdateGamepads()
 	u.updateSize()
@@ -219,7 +178,10 @@ func (u *UserInterface) update() error {
 func (u *UserInterface) loop(context driver.UIContext) <-chan error {
 	u.context = context
 
-	ch := make(chan error)
+	errCh := make(chan error)
+	reqStopAudioCh := make(chan struct{})
+	resStopAudioCh := make(chan struct{})
+
 	var cf js.Func
 	f := func(this js.Value, args []js.Value) interface{} {
 		if u.contextLost {
@@ -228,8 +190,11 @@ func (u *UserInterface) loop(context driver.UIContext) <-chan error {
 		}
 
 		if err := u.update(); err != nil {
-			ch <- err
-			close(ch)
+			close(reqStopAudioCh)
+			<-resStopAudioCh
+
+			errCh <- err
+			close(errCh)
 			return nil
 		}
 		if u.vsync {
@@ -250,18 +215,37 @@ func (u *UserInterface) loop(context driver.UIContext) <-chan error {
 	// To check the document's visiblity, visibilitychange event should usually be used. However, this event is
 	// not reliable and sometimes it is not fired (#961). Then, watch the state regularly instead.
 	go func() {
-		t := time.NewTicker(100 * time.Millisecond)
-		defer t.Stop()
-		for range t.C {
-			if u.suspended() {
-				u.context.SuspendAudio()
-			} else {
-				u.context.ResumeAudio()
+		defer close(resStopAudioCh)
+
+		const interval = 100 * time.Millisecond
+		t := time.NewTicker(interval)
+		defer func() {
+			t.Stop()
+
+			// This is a dirty hack. (*time.Ticker).Stop() just marks the timer 'deleted' [1] and
+			// something might run even after Stop. On Wasm, this causes an issue to execute Go program
+			// even after finishing (#1027). Sleep for the interval time duration to ensure that
+			// everything related to the timer is finished.
+			//
+			// [1] runtime.deltimer
+			time.Sleep(interval)
+		}()
+
+		for {
+			select {
+			case <-t.C:
+				if u.suspended() {
+					hooks.SuspendAudio()
+				} else {
+					hooks.ResumeAudio()
+				}
+			case <-reqStopAudioCh:
+				return
 			}
 		}
 	}()
 
-	return ch
+	return errCh
 }
 
 func init() {
@@ -289,6 +273,7 @@ func init() {
 	canvas = document.Call("createElement", "canvas")
 	canvas.Set("width", 16)
 	canvas.Set("height", 16)
+
 	document.Get("body").Call("appendChild", canvas)
 
 	htmlStyle := document.Get("documentElement").Get("style")
@@ -298,13 +283,9 @@ func init() {
 
 	bodyStyle := document.Get("body").Get("style")
 	bodyStyle.Set("backgroundColor", "#000")
-	bodyStyle.Set("position", "relative")
 	bodyStyle.Set("height", "100%")
 	bodyStyle.Set("margin", "0")
 	bodyStyle.Set("padding", "0")
-	bodyStyle.Set("display", "flex")
-	bodyStyle.Set("alignItems", "center")
-	bodyStyle.Set("justifyContent", "center")
 
 	// TODO: This is OK as long as the game is in an independent iframe.
 	// What if the canvas is embedded in a HTML directly?
@@ -314,7 +295,10 @@ func init() {
 	}))
 
 	canvasStyle := canvas.Get("style")
-	canvasStyle.Set("position", "absolute")
+	canvasStyle.Set("width", "100%")
+	canvasStyle.Set("height", "100%")
+	canvasStyle.Set("margin", "0")
+	canvasStyle.Set("padding", "0")
 
 	// Make the canvas focusable.
 	canvas.Call("setAttribute", "tabindex", 1)
@@ -420,13 +404,9 @@ func init() {
 	}))
 }
 
-func (u *UserInterface) Run(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics) error {
-	// scale is ignored.
-
-	document.Set("title", title)
-	u.setScreenSize(width, height)
-	u.pseudoScale = scale
+func (u *UserInterface) Run(context driver.UIContext) error {
 	canvas.Call("focus")
+	u.running = true
 	ch := u.loop(context)
 	if runtime.GOARCH == "wasm" {
 		return <-ch
@@ -435,6 +415,9 @@ func (u *UserInterface) Run(width, height int, scale float64, title string, cont
 	// On GopherJS, the main goroutine cannot be blocked due to the bug (gopherjs/gopherjs#826).
 	// Return immediately.
 	go func() {
+		defer func() {
+			u.running = false
+		}()
 		if err := <-ch; err != nil {
 			log.Fatal(err)
 		}
@@ -442,44 +425,45 @@ func (u *UserInterface) Run(width, height int, scale float64, title string, cont
 	return nil
 }
 
-func (u *UserInterface) RunWithoutMainLoop(width, height int, scale float64, title string, context driver.UIContext, graphics driver.Graphics) <-chan error {
+func (u *UserInterface) RunWithoutMainLoop(context driver.UIContext) {
 	panic("js: RunWithoutMainLoop is not implemented")
-}
-
-func (u *UserInterface) setScreenSize(width, height int) bool {
-	if u.width == width && u.height == height {
-		return false
-	}
-	u.width = width
-	u.height = height
-	u.updateScreenSize()
-	return true
 }
 
 func (u *UserInterface) updateScreenSize() {
 	body := document.Get("body")
-	bw := body.Get("clientWidth").Float()
-	bh := body.Get("clientHeight").Float()
-	sw := bw / float64(u.width)
-	sh := bh / float64(u.height)
-	if sw > sh {
-		u.scale = sh
-	} else {
-		u.scale = sw
+	bw := int(body.Get("clientWidth").Float() * u.DeviceScaleFactor())
+	bh := int(body.Get("clientHeight").Float() * u.DeviceScaleFactor())
+	canvas.Set("width", bw)
+	canvas.Set("height", bh)
+	u.sizeChanged = true
+}
+
+func (u *UserInterface) SetScreenTransparent(transparent bool) {
+	if u.running {
+		panic("js: SetScreenTransparent can't be called after the main loop starts")
 	}
 
-	canvas.Set("width", int(float64(u.width)*u.actualScreenScale()))
-	canvas.Set("height", int(float64(u.height)*u.actualScreenScale()))
-	canvasStyle := canvas.Get("style")
+	bodyStyle := document.Get("body").Get("style")
+	if transparent {
+		bodyStyle.Set("backgroundColor", "transparent")
+	} else {
+		bodyStyle.Set("backgroundColor", "#000")
+	}
+}
 
-	cssWidth := int(float64(u.width) * u.scale)
-	cssHeight := int(float64(u.height) * u.scale)
-	canvasStyle.Set("width", strconv.Itoa(cssWidth)+"px")
-	canvasStyle.Set("height", strconv.Itoa(cssHeight)+"px")
-
-	u.sizeChanged = true
+func (u *UserInterface) IsScreenTransparent() bool {
+	bodyStyle := document.Get("body").Get("style")
+	return bodyStyle.Get("backgroundColor").String() == "transparent"
 }
 
 func (u *UserInterface) Input() driver.Input {
 	return &u.input
+}
+
+func (u *UserInterface) Window() driver.Window {
+	return nil
+}
+
+func (*UserInterface) Graphics() driver.Graphics {
+	return opengl.Get()
 }

@@ -52,7 +52,8 @@ func takeScreenshot(screen *Image) error {
 		return err
 	}
 
-	if err := screen.mipmap.dump(newname); err != nil {
+	blackbg := !IsScreenTransparent()
+	if err := screen.buffered.Dump(newname, blackbg); err != nil {
 		return err
 	}
 
@@ -111,7 +112,7 @@ func (i *imageDumper) update(screen *Image) error {
 		i.keyState = map[Key]int{}
 
 		if keyname := os.Getenv(envScreenshotKey); keyname != "" {
-			if key, ok := keyNameToKey(keyname); ok {
+			if key, ok := keyNameToKeyCode(keyname); ok {
 				i.hasScreenshotKey = true
 				i.screenshotKey = key
 			}
@@ -119,7 +120,7 @@ func (i *imageDumper) update(screen *Image) error {
 
 		if keyname := os.Getenv(envInternalImagesKey); keyname != "" {
 			if isDebug() {
-				if key, ok := keyNameToKey(keyname); ok {
+				if key, ok := keyNameToKeyCode(keyname); ok {
 					i.hasDumpInternalImagesKey = true
 					i.dumpInternalImagesKey = key
 				}
@@ -157,6 +158,10 @@ func (i *imageDumper) update(screen *Image) error {
 		return nil
 	}
 
+	return i.dump(screen)
+}
+
+func (i *imageDumper) dump(screen *Image) error {
 	if i.toTakeScreenshot {
 		i.toTakeScreenshot = false
 		if err := takeScreenshot(screen); err != nil {

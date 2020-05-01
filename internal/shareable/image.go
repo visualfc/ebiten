@@ -52,8 +52,7 @@ func init() {
 		defer backendsM.Unlock()
 
 		resolveDeferred()
-		makeImagesShared()
-		return nil
+		return makeImagesShared()
 	})
 }
 
@@ -73,14 +72,17 @@ func resolveDeferred() {
 // This value is exported for testing.
 const MaxCountForShare = 10
 
-func makeImagesShared() {
+func makeImagesShared() error {
 	for i := range imagesToMakeShared {
 		i.nonUpdatedCount++
 		if i.nonUpdatedCount >= MaxCountForShare {
-			i.makeShared()
+			if err := i.makeShared(); err != nil {
+				return err
+			}
 		}
 		delete(imagesToMakeShared, i)
 	}
+	return nil
 }
 
 type backend struct {
@@ -91,33 +93,30 @@ type backend struct {
 }
 
 func (b *backend) TryAlloc(width, height int) (*packing.Node, bool) {
-	// If the region is allocated without any extension, it's fine.
+	// If the region is allocated without any extension, that's fine.
 	if n := b.page.Alloc(width, height); n != nil {
 		return n, true
 	}
 
-	// Simulate the extending the page and calculate the appropriate page size.
-	page := b.page.Clone()
-	nExtended := 0
+	nExtended := 1
+	var n *packing.Node
 	for {
-		if !page.Extend() {
+		if !b.page.Extend(nExtended) {
 			// The page can't be extended any more. Return as failure.
 			return nil, false
 		}
 		nExtended++
-		if n := page.Alloc(width, height); n != nil {
-			// The page is just for emulation, so we don't have to free it.
+		n = b.page.Alloc(width, height)
+		if n != nil {
+			b.page.CommitExtension()
 			break
 		}
+		b.page.RollbackExtension()
 	}
 
-	for i := 0; i < nExtended; i++ {
-		b.page.Extend()
-	}
 	s := b.page.Size()
 	b.restorable = b.restorable.Extend(s, s)
 
-	n := b.page.Alloc(width, height)
 	if n == nil {
 		panic("shareable: Alloc result must not be nil at TryAlloc")
 	}
@@ -223,14 +222,14 @@ func (i *Image) ensureNotShared() {
 	}
 }
 
-func (i *Image) makeShared() {
+func (i *Image) makeShared() error {
 	if i.backend == nil {
 		i.allocate(true)
-		return
+		return nil
 	}
 
 	if i.isShared() {
-		return
+		return nil
 	}
 
 	if !i.shareable() {
@@ -241,7 +240,10 @@ func (i *Image) makeShared() {
 	pixels := make([]byte, 4*i.width*i.height)
 	for y := 0; y < i.height; y++ {
 		for x := 0; x < i.width; x++ {
-			r, g, b, a := i.at(x, y)
+			r, g, b, a, err := i.at(x, y)
+			if err != nil {
+				return err
+			}
 			pixels[4*(x+i.width*y)] = r
 			pixels[4*(x+i.width*y)+1] = g
 			pixels[4*(x+i.width*y)+2] = b
@@ -251,6 +253,7 @@ func (i *Image) makeShared() {
 	newI.replacePixels(pixels)
 	newI.moveTo(i)
 	i.nonUpdatedCount = 0
+	return nil
 }
 
 func (i *Image) region() (x, y, width, height int) {
@@ -347,19 +350,6 @@ func (i *Image) Fill(clr color.RGBA) {
 	delete(imagesToMakeShared, i)
 }
 
-// ClearFramebuffer clears the image with a color. This affects not only the (0, 0)-(width, height) region but also
-// the whole framebuffer region.
-func (i *Image) ClearFramebuffer() {
-	backendsM.Lock()
-	defer backendsM.Unlock()
-	if i.disposed {
-		panic("shareable: the drawing target image must not be disposed (Fill)")
-	}
-	i.ensureNotShared()
-
-	i.backend.restorable.Clear()
-}
-
 func (i *Image) ReplacePixels(p []byte) {
 	backendsM.Lock()
 	defer backendsM.Unlock()
@@ -386,21 +376,21 @@ func (i *Image) replacePixels(p []byte) {
 	i.backend.restorable.ReplacePixels(p, x, y, w, h)
 }
 
-func (i *Image) At(x, y int) (byte, byte, byte, byte) {
+func (i *Image) At(x, y int) (byte, byte, byte, byte, error) {
 	backendsM.Lock()
-	r, g, b, a := i.at(x, y)
+	r, g, b, a, err := i.at(x, y)
 	backendsM.Unlock()
-	return r, g, b, a
+	return r, g, b, a, err
 }
 
-func (i *Image) at(x, y int) (byte, byte, byte, byte) {
+func (i *Image) at(x, y int) (byte, byte, byte, byte, error) {
 	if i.backend == nil {
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, nil
 	}
 
 	ox, oy, w, h := i.region()
 	if x < 0 || y < 0 || x >= w || y >= h {
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, nil
 	}
 
 	return i.backend.restorable.At(x+ox, y+oy)
@@ -539,11 +529,11 @@ func (i *Image) allocate(shareable bool) {
 	i.node = n
 }
 
-func (i *Image) Dump(path string) error {
+func (i *Image) Dump(path string, blackbg bool) error {
 	backendsM.Lock()
 	defer backendsM.Unlock()
 
-	return i.backend.restorable.Dump(path)
+	return i.backend.restorable.Dump(path, blackbg)
 }
 
 func NewScreenFramebufferImage(width, height int) *Image {
@@ -559,8 +549,7 @@ func NewScreenFramebufferImage(width, height int) *Image {
 func EndFrame() error {
 	backendsM.Lock()
 
-	restorable.ResolveStaleImages()
-	return restorable.Error()
+	return restorable.ResolveStaleImages()
 }
 
 func BeginFrame() error {

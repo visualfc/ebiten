@@ -114,6 +114,11 @@ func (w *Window) GetAttrib(attrib Hint) int {
 	return int(r)
 }
 
+func (w *Window) SetAttrib(attrib Hint, value int) {
+	glfwDLL.call("glfwSetWindowAttrib", w.w, uintptr(attrib), uintptr(value))
+	panicError()
+}
+
 func (w *Window) GetCursorPos() (x, y float64) {
 	glfwDLL.call("glfwGetCursorPos", w.w, uintptr(unsafe.Pointer(&x)), uintptr(unsafe.Pointer(&y)))
 	panicError()
@@ -161,8 +166,23 @@ func (w *Window) GetSize() (int, int) {
 	return int(width), int(height)
 }
 
+func (w *Window) Iconify() {
+	glfwDLL.call("glfwIconifyWindow", w.w)
+	panicError()
+}
+
 func (w *Window) MakeContextCurrent() {
 	glfwDLL.call("glfwMakeContextCurrent", w.w)
+	panicError()
+}
+
+func (w *Window) Maximize() {
+	glfwDLL.call("glfwMaximizeWindow", w.w)
+	panicError()
+}
+
+func (w *Window) Restore() {
+	glfwDLL.call("glfwRestoreWindow", w.w)
 	panicError()
 }
 
@@ -306,9 +326,43 @@ func CreateWindow(width, height int, title string, monitor *Monitor, share *Wind
 	return theGLFWWindows.add(w), nil
 }
 
-func GetJoystickAxes(joy Joystick) []float32 {
+func (j Joystick) GetGUID() string {
+	ptr := glfwDLL.call("glfwGetJoystickGUID", uintptr(j))
+	panicError()
+	var backed [256]byte
+	as := backed[:0]
+	for i := int32(0); ; i++ {
+		b := *(*byte)(unsafe.Pointer(ptr))
+		ptr += unsafe.Sizeof(byte(0))
+		if b == 0 {
+			break
+		}
+		as = append(as, b)
+	}
+	r := string(as)
+	return r
+}
+
+func (j Joystick) GetName() string {
+	ptr := glfwDLL.call("glfwGetJoystickName", uintptr(j))
+	panicError()
+	var backed [256]byte
+	as := backed[:0]
+	for i := int32(0); ; i++ {
+		b := *(*byte)(unsafe.Pointer(ptr))
+		ptr += unsafe.Sizeof(byte(0))
+		if b == 0 {
+			break
+		}
+		as = append(as, b)
+	}
+	r := string(as)
+	return r
+}
+
+func (j Joystick) GetAxes() []float32 {
 	var l int32
-	ptr := glfwDLL.call("glfwGetJoystickAxes", uintptr(joy), uintptr(unsafe.Pointer(&l)))
+	ptr := glfwDLL.call("glfwGetJoystickAxes", uintptr(j), uintptr(unsafe.Pointer(&l)))
 	panicError()
 	as := make([]float32, l)
 	for i := int32(0); i < l; i++ {
@@ -318,9 +372,9 @@ func GetJoystickAxes(joy Joystick) []float32 {
 	return as
 }
 
-func GetJoystickButtons(joy Joystick) []byte {
+func (j Joystick) GetButtons() []byte {
 	var l int32
-	ptr := glfwDLL.call("glfwGetJoystickButtons", uintptr(joy), uintptr(unsafe.Pointer(&l)))
+	ptr := glfwDLL.call("glfwGetJoystickButtons", uintptr(j), uintptr(unsafe.Pointer(&l)))
 	panicError()
 	bs := make([]byte, l)
 	for i := int32(0); i < l; i++ {
@@ -359,8 +413,8 @@ func Init() error {
 	return acceptError(APIUnavailable)
 }
 
-func JoystickPresent(joy Joystick) bool {
-	r := glfwDLL.call("glfwJoystickPresent", uintptr(joy))
+func (j Joystick) Present() bool {
+	r := glfwDLL.call("glfwJoystickPresent", uintptr(j))
 	panicError()
 	return r == True
 }
@@ -370,10 +424,10 @@ func PollEvents() {
 	panicError()
 }
 
-func SetMonitorCallback(cbfun func(monitor *Monitor, event MonitorEvent)) {
+func SetMonitorCallback(cbfun func(monitor *Monitor, event PeripheralEvent)) {
 	var gcb uintptr
 	if cbfun != nil {
-		gcb = windows.NewCallbackCDecl(func(monitor uintptr, event MonitorEvent) uintptr {
+		gcb = windows.NewCallbackCDecl(func(monitor uintptr, event PeripheralEvent) uintptr {
 			var m *Monitor
 			if monitor != 0 {
 				m = &Monitor{monitor}

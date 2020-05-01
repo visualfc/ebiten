@@ -20,7 +20,8 @@ import (
 
 // Thread represents an OS thread.
 type Thread struct {
-	funcs chan func()
+	funcs   chan func() error
+	results chan error
 }
 
 // New creates a new thread.
@@ -28,19 +29,22 @@ type Thread struct {
 // It is assumed that the OS thread is fixed by runtime.LockOSThread when New is called.
 func New() *Thread {
 	return &Thread{
-		funcs: make(chan func()),
+		funcs:   make(chan func() error),
+		results: make(chan error),
 	}
 }
 
 // Loop starts the thread loop.
 //
 // Loop must be called on the thread.
+//
+// Loop can be called multiple times.
 func (t *Thread) Loop(context context.Context) {
 loop:
 	for {
 		select {
 		case f := <-t.funcs:
-			f()
+			t.results <- f()
 		case <-context.Done():
 			break loop
 		}
@@ -50,13 +54,9 @@ loop:
 // Call calls f on the thread.
 //
 // Do not call this from the same thread. This would block forever.
+//
+// Call blocks if Loop is not called.
 func (t *Thread) Call(f func() error) error {
-	ch := make(chan struct{})
-	var err error
-	t.funcs <- func() {
-		err = f()
-		close(ch)
-	}
-	<-ch
-	return err
+	t.funcs <- f
+	return <-t.results
 }

@@ -15,6 +15,7 @@
 package buffered_test
 
 import (
+	"errors"
 	"image/color"
 	"os"
 	"testing"
@@ -34,19 +35,29 @@ func runOnMainThread(f func()) {
 }
 
 func TestMain(m *testing.M) {
+	codeCh := make(chan int)
+	endCh := make(chan struct{})
 	go func() {
-		os.Exit(m.Run())
+		code := m.Run()
+		close(endCh)
+		codeCh <- code
+		close(codeCh)
 	}()
 
-	for {
-		if err := ebiten.Run(func(*ebiten.Image) error {
-			f := <-mainCh
+	rt := errors.New("regular termination")
+	if err := ebiten.Run(func(*ebiten.Image) error {
+		select {
+		case f := <-mainCh:
 			f()
-			return nil
-		}, 320, 240, 1, ""); err != nil {
-			panic(err)
+		case <-endCh:
+			return rt
 		}
+		return nil
+	}, 320, 240, 1, ""); err != nil && err != rt {
+		panic(err)
 	}
+
+	os.Exit(<-codeCh)
 }
 
 type testResult struct {
@@ -75,6 +86,35 @@ var testSetBeforeMainResult = func() testResult {
 func TestSetBeforeMain(t *testing.T) {
 	got := <-testSetBeforeMainResult.got
 	want := testSetBeforeMainResult.want
+
+	if got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+}
+
+var testDrawImageBeforeMainResult = func() testResult {
+	const w, h = 16, 16
+	src, _ := ebiten.NewImage(w, h, ebiten.FilterDefault)
+	dst, _ := ebiten.NewImage(w, h, ebiten.FilterDefault)
+	src.Set(0, 0, color.White)
+	dst.DrawImage(src, nil)
+
+	ch := make(chan color.RGBA, 1)
+	go func() {
+		runOnMainThread(func() {
+			ch <- dst.At(0, 0).(color.RGBA)
+		})
+	}()
+
+	return testResult{
+		want: color.RGBA{0xff, 0xff, 0xff, 0xff},
+		got:  ch,
+	}
+}()
+
+func TestDrawImageBeforeMain(t *testing.T) {
+	got := <-testDrawImageBeforeMainResult.got
+	want := testDrawImageBeforeMainResult.want
 
 	if got != want {
 		t.Errorf("got: %v, want: %v", got, want)

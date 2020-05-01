@@ -15,14 +15,56 @@
 package ebiten
 
 import (
-	"image"
 	"sync/atomic"
 
 	"github.com/hajimehoshi/ebiten/internal/clock"
 	"github.com/hajimehoshi/ebiten/internal/driver"
 )
 
-var _ = __EBITEN_REQUIRES_GO_VERSION_1_12_OR_LATER__
+// Game defines necessary functions for a game.
+type Game interface {
+	// Update updates a game by one tick. The given argument represents a screen image.
+	//
+	// Basically Update updates the game logic. Whether Update also draws the screen or not depends on the
+	// existence of Draw implementation.
+	//
+	// The Draw function's definition is:
+	//
+	//     Draw(screen *Image)
+	//
+	// With Draw (the recommended way), Update updates only the game logic and Draw draws the screen.
+	// In this case, the argument screen's updated content by Update is not adopted for the actual game screen,
+	// and the screen's updated content by Draw is adopted instead.
+	//
+	// Without Draw (the legacy way), Update updates the game logic and also draws the screen.
+	// In this case, the argument screen's updated content by Update is adopted for the actual game screen.
+	Update(screen *Image) error
+
+	// Draw draws the game screen by one frame.
+	//
+	// The give argument represents a screen image. The updated content is adopted as the game screen.
+	//
+	// Draw is an optional function for backward compatibility.
+	//
+	// Draw(screen *Image)
+
+	// Layout accepts a native outside size in device-independent pixels and returns the game's logical screen
+	// size.
+	//
+	// On desktops, the outside is a window or a monitor (fullscreen mode). On browsers, the outside is a body
+	// element. On mobiles, the outside is the view's size.
+	//
+	// Even though the outside size and the screen size differ, the rendering scale is automatically adjusted to
+	// fit with the outside.
+	//
+	// Layout is called almost every frame.
+	//
+	// If Layout returns non-positive numbers, the caller can panic.
+	//
+	// You can return a fixed screen size if you don't care, or you can also return a calculated screen size
+	// adjusted with the given outside size.
+	Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int)
+}
 
 // TPS represents a default ticks per second, that represents how many times game updating happens in a second.
 const DefaultTPS = 60
@@ -75,23 +117,27 @@ func setDrawingSkipped(skipped bool) {
 //        return nil
 //    }
 //
+// IsDrawingSkipped is useful if you use Run function or RunGame function without implementing Game's Draw.
+// Otherwise, i.e., if you use RunGame function with implementing Game's Draw, IsDrawingSkipped should not be used.
+// If you use RunGame and Draw, IsDrawingSkipped always returns true.
+//
 // IsDrawingSkipped is concurrent-safe.
 func IsDrawingSkipped() bool {
 	return atomic.LoadInt32(&isDrawingSkipped) != 0
 }
 
-// IsRunningSlowly is deprecated as of 1.8.0-alpha.
-// Use IsDrawingSkipped instead.
+// IsRunningSlowly is deprecated as of 1.8.0-alpha. Use Game's Draw function instead.
 func IsRunningSlowly() bool {
 	return IsDrawingSkipped()
 }
 
-var theUIContext atomic.Value
-
-// Run runs the game.
+// Run starts the main loop and runs the game.
 // f is a function which is called at every frame.
 // The argument (*Image) is the render target that represents the screen.
 // The screen size is based on the given values (width and height).
+//
+// Run is a shorthand for RunGame, but there are some restrictions.
+// If you want to resize the window by dragging, use RunGame instead.
 //
 // A window size is based on the given values (width, height and scale).
 //
@@ -118,7 +164,7 @@ var theUIContext atomic.Value
 // This is not related to framerate (display's refresh rate).
 //
 // f is not called when the window is in background by default.
-// This setting is configurable with SetRunnableInBackground.
+// This setting is configurable with SetRunnableOnUnfocused.
 //
 // The given scale is ignored on fullscreen mode or gomobile-build mode.
 //
@@ -133,63 +179,158 @@ var theUIContext atomic.Value
 //
 // Don't call Run twice or more in one process.
 func Run(f func(*Image) error, width, height int, scale float64, title string) error {
-	f = (&imageDumper{f: f}).update
+	if IsWindowResizable() {
+		panic("ebiten: a resizable window works with RunGame, not Run")
+	}
+	game := &defaultGame{
+		update: (&imageDumper{f: f}).update,
+		width:  width,
+		height: height,
+	}
+	ww, wh := int(float64(width)*scale), int(float64(height)*scale)
+	fixWindowPosition(ww, wh)
+	SetWindowSize(ww, wh)
+	SetWindowTitle(title)
+	return runGame(game, scale)
+}
 
-	c := newUIContext(f)
-	theUIContext.Store(c)
+type imageDumperGame struct {
+	game Game
+	d    *imageDumper
+}
 
-	if err := uiDriver().Run(width, height, scale, title, c, graphicsDriver()); err != nil {
+func (i *imageDumperGame) Update(screen *Image) error {
+	if i.d == nil {
+		i.d = &imageDumper{f: i.game.Update}
+	}
+	return i.d.update(screen)
+}
+
+func (i *imageDumperGame) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
+	return i.game.Layout(outsideWidth, outsideHeight)
+}
+
+type imageDumperGameWithDraw struct {
+	imageDumperGame
+	err error
+}
+
+func (i *imageDumperGameWithDraw) Update(screen *Image) error {
+	if i.err != nil {
+		return i.err
+	}
+	return i.imageDumperGame.Update(screen)
+}
+
+func (i *imageDumperGameWithDraw) Draw(screen *Image) {
+	if i.err != nil {
+		return
+	}
+
+	i.game.(interface{ Draw(*Image) }).Draw(screen)
+
+	// Call dump explicitly. IsDrawingSkipped always returns true when Draw is defined.
+	if i.d == nil {
+		i.d = &imageDumper{f: i.game.Update}
+	}
+	i.err = i.d.dump(screen)
+}
+
+// RunGame starts the main loop and runs the game.
+// game's Update function is called every tick to update the gmae logic.
+// game's Draw function is, if it exists, called every frame to draw the screen.
+// game's Layout function is called when necessary, and you can specify the logical screen size by the function.
+//
+// game must implement Game interface.
+// Game's Draw function is optional, but it is recommended to implement Draw to seperate updating the logic and
+// rendering.
+//
+// RunGame is a more flexibile form of Run due to game's Layout function.
+// You can make a resizable window if you use RunGame, while you cannot if you use Run.
+// RunGame is more sophisticated way than Run and hides the notion of 'scale'.
+//
+// While Run specifies the window size, RunGame does not.
+// You need to call SetWindowSize before RunGame if you want.
+// Otherwise, a default window size is adopted.
+//
+// Some functions (ScreenScale, SetScreenScale, SetScreenSize) are not available with RunGame.
+//
+// On browsers, it is strongly recommended to use iframe if you embed an Ebiten application in your website.
+//
+// RunGame must be called on the main thread.
+// Note that Ebiten bounds the main goroutine to the main OS thread by runtime.LockOSThread.
+//
+// Ebiten tries to call game's Update function 60 times a second by default. In other words,
+// TPS (ticks per second) is 60 by default.
+// This is not related to framerate (display's refresh rate).
+//
+// game's Update is not called when the window is in background by default.
+// This setting is configurable with SetRunnableOnUnfocused.
+//
+// On non-GopherJS environments, RunGame returns error when 1) OpenGL error happens, 2) audio error happens or
+// 3) f returns error. In the case of 3), RunGame returns the same error.
+//
+// On GopherJS, RunGame returns immediately.
+// It is because the 'main' goroutine cannot be blocked on GopherJS due to the bug (gopherjs/gopherjs#826).
+// When an error happens, this is shown as an error on the console.
+//
+// The size unit is device-independent pixel.
+//
+// Don't call RunGame twice or more in one process.
+func RunGame(game Game) error {
+	fixWindowPosition(WindowSize())
+	if _, ok := game.(interface{ Draw(*Image) }); ok {
+		return runGame(&imageDumperGameWithDraw{
+			imageDumperGame: imageDumperGame{game: game},
+		}, 0)
+	}
+	return runGame(&imageDumperGame{game: game}, 0)
+}
+
+func runGame(game Game, scale float64) error {
+	theUIContext.set(game, scale)
+	if err := uiDriver().Run(theUIContext); err != nil {
 		if err == driver.RegularTermination {
 			return nil
 		}
 		return err
 	}
-
 	return nil
 }
 
-// RunWithoutMainLoop runs the game, but don't call the loop on the main (UI) thread.
-// Different from Run, RunWithoutMainLoop returns immediately.
+// RunGameWithoutMainLoop runs the game, but don't call the loop on the main (UI) thread.
+// Different from Run, RunGameWithoutMainLoop returns immediately.
 //
-// Ebiten users should NOT call RunWithoutMainLoop.
+// Ebiten users should NOT call RunGameWithoutMainLoop.
 // Instead, functions in github.com/hajimehoshi/ebiten/mobile package calls this.
-func RunWithoutMainLoop(f func(*Image) error, width, height int, scale float64, title string) <-chan error {
-	f = (&imageDumper{f: f}).update
-
-	c := newUIContext(f)
-	theUIContext.Store(c)
-
-	return uiDriver().RunWithoutMainLoop(width, height, scale, title, c, graphicsDriver())
+func RunGameWithoutMainLoop(game Game) {
+	fixWindowPosition(WindowSize())
+	if _, ok := game.(interface{ Draw(*Image) }); ok {
+		game = &imageDumperGameWithDraw{
+			imageDumperGame: imageDumperGame{game: game},
+		}
+	} else {
+		game = &imageDumperGame{game: game}
+	}
+	theUIContext.set(game, 0)
+	uiDriver().RunWithoutMainLoop(theUIContext)
 }
 
 // ScreenSizeInFullscreen returns the size in device-independent pixels when the game is fullscreen.
 // The adopted monitor is the 'current' monitor which the window belongs to.
 // The returned value can be given to Run or SetSize function if the perfectly fit fullscreen is needed.
 //
-// On browsers, ScreenSizeInFullscreen returns the 'window' (global object) size, not 'screen' size since an Ebiten game
-// should not know the outside of the window object.
-// For more details, see SetFullscreen API comment.
+// On browsers, ScreenSizeInFullscreen returns the 'window' (global object) size, not 'screen' size since an Ebiten
+// game should not know the outside of the window object. For more details, see SetFullscreen API comment.
 //
 // On mobiles, ScreenSizeInFullscreen returns (0, 0) so far.
 //
-// If you use this for screen size with SetFullscreen(true), you can get the fullscreen mode
-// which size is well adjusted with the monitor.
+// ScreenSizeInFullscreen's use cases are limited. If you are making a fullscreen application, you can use RunGame and
+// the Game interface's Layout function instead. If you are making a not-fullscreen application but the application's
+// behavior depends on the monitor size, ScreenSizeInFullscreen is useful.
 //
-//     w, h := ScreenSizeInFullscreen()
-//     ebiten.SetFullscreen(true)
-//     ebiten.Run(update, w, h, 1, "title")
-//
-// Furthermore, you can use them with DeviceScaleFactor(), you can get the finest
-// fullscreen mode.
-//
-//     s := ebiten.DeviceScaleFactor()
-//     w, h := ScreenSizeInFullscreen()
-//     ebiten.SetFullscreen(true)
-//     ebiten.Run(update, int(float64(w) * s), int(float64(h) * s), 1/s, "title")
-//
-// For actual example, see examples/fullscreen
-//
-// ScreenSizeInFullscreen must be called on the main thread before ebiten.Run, and is concurrent-safe after ebiten.Run.
+// ScreenSizeInFullscreen must be called on the main thread before ebiten.Run, and is concurrent-safe after
+// ebiten.Run.
 func ScreenSizeInFullscreen() (int, int) {
 	return uiDriver().ScreenSizeInFullscreen()
 }
@@ -199,76 +340,67 @@ func MonitorSize() (int, int) {
 	return ScreenSizeInFullscreen()
 }
 
-// SetScreenSize changes the (logical) size of the screen.
-// This doesn't affect the current scale of the screen.
-//
-// Unit is device-independent pixel.
-//
-// SetScreenSize is concurrent-safe.
+// SetScreenSize is deprecated as of 1.11.0-alpha. Use SetWindowSize and RunGame (Game's Layout) instead.
 func SetScreenSize(width, height int) {
 	if width <= 0 || height <= 0 {
 		panic("ebiten: width and height must be positive")
 	}
-	uiDriver().SetScreenSize(width, height)
+	theUIContext.setScreenSize(width, height)
 }
 
-// SetScreenScale changes the scale of the screen on desktops.
-//
-// Note that the actual screen is multiplied not only by the given scale but also
-// by the device scale on high-DPI display.
-// If you pass inverse of the device scale,
-// you can disable this automatical device scaling as a result.
-// You can get the device scale by DeviceScaleFactor function.
-//
-// On browsers, SetScreenScale saves the given value and affects the returned value of ScreenScale,
-// but does not affect actual rendering.
-// SetScreenScale works as this as of 1.10.0-alpha.
-// Before that, SetScreenScale affected the rendering scale.
-//
-// On mobiles, SetScreenScale works, but usually the user doesn't have to call this.
-// Instead, ebitenmobile calls this automatically.
-//
-// SetScreenScale panics if scale is not a positive number.
-//
-// SetScreenScale is concurrent-safe.
+// SetScreenScale is deprecated as of 1.11.0-alpha. Use SetWindowSize instead.
 func SetScreenScale(scale float64) {
 	if scale <= 0 {
 		panic("ebiten: scale must be positive")
 	}
-	uiDriver().SetScreenScale(scale)
+	theUIContext.setScaleForWindow(scale)
 }
 
-// ScreenScale returns the current screen scale.
-//
-// On browsers, this value does not affect actual rendering.
-//
-// If Run is not called, this returns 0.
-//
-// ScreenScale is concurrent-safe.
+// ScreenScale is deprecated as of 1.11.0-alpha. Use WindowSize instead.
 func ScreenScale() float64 {
-	return uiDriver().ScreenScale()
+	return theUIContext.getScaleForWindow()
 }
 
-// IsCursorVisible returns a boolean value indicating whether
-// the cursor is visible or not.
+// CursorMode returns the current cursor mode.
 //
-// IsCursorVisible always returns false on mobiles.
+// On browsers, only CursorModeVisible and CursorModeHidden are supported.
 //
-// IsCursorVisible is concurrent-safe.
+// CursorMode returns CursorModeHidden on mobiles.
+//
+// CursorMode is concurrent-safe.
+func CursorMode() CursorModeType {
+	return CursorModeType(uiDriver().CursorMode())
+}
+
+// SetCursorMode sets the render and capture mode of the mouse cursor.
+// CursorModeVisible sets the cursor to always be visible.
+// CursorModeHidden hides the system cursor when over the window.
+// CursorModeCaptured hides the system cursor and locks it to the window.
+//
+// On browsers, only CursorModeVisible and CursorModeHidden are supported.
+//
+// SetCursorMode does nothing on mobiles.
+//
+// SetCursorMode is concurrent-safe.
+func SetCursorMode(mode CursorModeType) {
+	uiDriver().SetCursorMode(driver.CursorMode(mode))
+}
+
+// IsCursorVisible is deprecated as of 1.11.0-alpha. Use CursorMode instead.
 func IsCursorVisible() bool {
-	return uiDriver().IsCursorVisible()
+	return CursorMode() == CursorModeVisible
 }
 
-// SetCursorVisible changes the state of cursor visiblity.
-//
-// SetCursorVisible does nothing on mobiles.
-//
-// SetCursorVisible is concurrent-safe.
+// SetCursorVisible is deprecated as of 1.11.0-alpha. Use SetCursorMode instead.
 func SetCursorVisible(visible bool) {
-	uiDriver().SetCursorVisible(visible)
+	if visible {
+		SetCursorMode(CursorModeVisible)
+	} else {
+		SetCursorMode(CursorModeHidden)
+	}
 }
 
-// SetCursorVisibility is deprecated as of 1.6.0-alpha. Use SetCursorVisible instead.
+// SetCursorVisibility is deprecated as of 1.6.0-alpha. Use SetCursorMode instead.
 func SetCursorVisibility(visible bool) {
 	SetCursorVisible(visible)
 }
@@ -305,61 +437,30 @@ func SetFullscreen(fullscreen bool) {
 	uiDriver().SetFullscreen(fullscreen)
 }
 
-// IsRunnableInBackground returns a boolean value indicating whether
+// IsFocused returns a boolean value indicating whether
+// the game is in focus or in the foreground.
+//
+// IsFocused will only return true if IsRunnableOnUnfocused is false.
+//
+// IsFocused is concurrent-safe.
+func IsFocused() bool {
+	return uiDriver().IsFocused()
+}
+
+// IsRunnableOnUnfocused returns a boolean value indicating whether
 // the game runs even in background.
 //
-// IsRunnableInBackground is concurrent-safe.
+// IsRunnableOnUnfocused is concurrent-safe.
+func IsRunnableOnUnfocused() bool {
+	return uiDriver().IsRunnableOnUnfocused()
+}
+
+// IsRunnableInBackground is deprecated as of 1.11.0-alpha. Use IsRunnableOnUnfocused instead.
 func IsRunnableInBackground() bool {
-	return uiDriver().IsRunnableInBackground()
+	return IsRunnableOnUnfocused()
 }
 
-// SetWindowDecorated sets the state if the window is decorated.
-//
-// The window is decorated by default.
-//
-// SetWindowDecorated works only on desktops.
-// SetWindowDecorated does nothing on other platforms.
-//
-// SetWindowDecorated panics if SetWindowDecorated is called after Run.
-//
-// SetWindowDecorated is concurrent-safe.
-func SetWindowDecorated(decorated bool) {
-	uiDriver().SetWindowDecorated(decorated)
-}
-
-// IsWindowDecorated reports whether the window is decorated.
-//
-// IsWindowDecorated is concurrent-safe.
-func IsWindowDecorated() bool {
-	return uiDriver().IsWindowDecorated()
-}
-
-// setWindowResizable is unexported until specification is determined (#320)
-//
-// setWindowResizable sets the state if the window is resizable.
-//
-// The window is not resizable by default.
-//
-// When the window is resizable, the image size given via the update function can be changed by resizing.
-//
-// setWindowResizable works only on desktops.
-// setWindowResizable does nothing on other platforms.
-//
-// setWindowResizable panics if setWindowResizable is called after Run.
-//
-// setWindowResizable is concurrent-safe.
-func setWindowResizable(resizable bool) {
-	uiDriver().SetWindowResizable(resizable)
-}
-
-// IsWindowResizable reports whether the window is resizable.
-//
-// IsWindowResizable is concurrent-safe.
-func IsWindowResizable() bool {
-	return uiDriver().IsWindowResizable()
-}
-
-// SetRunnableInBackground sets the state if the game runs even in background.
+// SetRunnableOnUnfocused sets the state if the game runs even in background.
 //
 // If the given value is true, the game runs in background e.g. when losing focus.
 // The initial state is false.
@@ -367,44 +468,16 @@ func IsWindowResizable() bool {
 // Known issue: On browsers, even if the state is on, the game doesn't run in background tabs.
 // This is because browsers throttles background tabs not to often update.
 //
-// SetRunnableInBackground does nothing on mobiles so far.
+// SetRunnableOnUnfocused does nothing on mobiles so far.
 //
-// SetRunnableInBackground is concurrent-safe.
+// SetRunnableOnUnfocused is concurrent-safe.
+func SetRunnableOnUnfocused(runnableOnUnfocused bool) {
+	uiDriver().SetRunnableOnUnfocused(runnableOnUnfocused)
+}
+
+// SetRunnableInBackground is deprecated as of 1.11.0-alpha. Use SetRunnableOnUnfocused instead.
 func SetRunnableInBackground(runnableInBackground bool) {
-	uiDriver().SetRunnableInBackground(runnableInBackground)
-}
-
-// SetWindowTitle sets the title of the window.
-//
-// SetWindowTitle does nothing on mobiles.
-//
-// SetWindowTitle is concurrent-safe.
-func SetWindowTitle(title string) {
-	uiDriver().SetWindowTitle(title)
-}
-
-// SetWindowIcon sets the icon of the game window.
-//
-// If len(iconImages) is 0, SetWindowIcon reverts the icon to the default one.
-//
-// For desktops, see the document of glfwSetWindowIcon of GLFW 3.2:
-//
-//     This function sets the icon of the specified window.
-//     If passed an array of candidate images, those of or closest to the sizes
-//     desired by the system are selected.
-//     If no images are specified, the window reverts to its default icon.
-//
-//     The desired image sizes varies depending on platform and system settings.
-//     The selected images will be rescaled as needed.
-//     Good sizes include 16x16, 32x32 and 48x48.
-//
-// As macOS windows don't have icons, SetWindowIcon doesn't work on macOS.
-//
-// SetWindowIcon doesn't work on browsers or mobiles.
-//
-// SetWindowIcon is concurrent-safe.
-func SetWindowIcon(iconImages []image.Image) {
-	uiDriver().SetWindowIcon(iconImages)
+	SetRunnableOnUnfocused(runnableInBackground)
 }
 
 // DeviceScaleFactor returns a device scale factor value of the current monitor which the window belongs to.
@@ -415,7 +488,7 @@ func SetWindowIcon(iconImages []image.Image) {
 // DeviceScaleFactor might panic on init function on some devices like Android.
 // Then, it is not recommended to call DeviceScaleFactor from init functions.
 //
-// DeviceScaleFactor must be called on the main thread before ebiten.Run, and is concurrent-safe after ebiten.Run.
+// DeviceScaleFactor must be called on the main thread before the main loop, and is concurrent-safe after the main loop.
 func DeviceScaleFactor() float64 {
 	return uiDriver().DeviceScaleFactor()
 }
@@ -477,4 +550,22 @@ func SetMaxTPS(tps int) {
 		panic("ebiten: tps must be >= 0 or UncappedTPS")
 	}
 	atomic.StoreInt32(&currentMaxTPS, int32(tps))
+}
+
+// IsScreenTransparent reports whether the window is transparent.
+//
+// IsScreenTransparent is concurrent-safe.
+func IsScreenTransparent() bool {
+	return uiDriver().IsScreenTransparent()
+}
+
+// SetScreenTransparent sets the state if the window is transparent.
+//
+// SetScreenTransparent panics if SetScreenTransparent is called after the main loop.
+//
+// SetScreenTransparent does nothing on mobiles.
+//
+// SetScreenTransparent is concurrent-safe.
+func SetScreenTransparent(transparent bool) {
+	uiDriver().SetScreenTransparent(transparent)
 }

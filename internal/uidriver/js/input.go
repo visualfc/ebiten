@@ -17,6 +17,7 @@
 package js
 
 import (
+	"encoding/hex"
 	"syscall/js"
 	"unicode"
 
@@ -31,6 +32,7 @@ type pos struct {
 
 type gamePad struct {
 	valid         bool
+	name          string
 	axisNum       int
 	axes          [16]float64
 	buttonNum     int
@@ -52,7 +54,29 @@ type Input struct {
 }
 
 func (i *Input) CursorPosition() (x, y int) {
-	return i.ui.adjustPosition(i.cursorX, i.cursorY)
+	xf, yf := i.ui.context.AdjustPosition(float64(i.cursorX), float64(i.cursorY))
+	return int(xf), int(yf)
+}
+
+func (i *Input) GamepadSDLID(id int) string {
+	// This emulates the implementation of EMSCRIPTEN_JoystickGetDeviceGUID.
+	// https://hg.libsdl.org/SDL/file/bc90ce38f1e2/src/joystick/emscripten/SDL_sysjoystick.c#l385
+	if len(i.gamepads) <= id {
+		return ""
+	}
+	var sdlid [16]byte
+	copy(sdlid[:], []byte(i.gamepads[id].name))
+	return hex.EncodeToString(sdlid[:])
+}
+
+// GamepadName returns a string containing some information about the controller.
+// A PS2 controller returned "810-3-USB Gamepad" on Firefox
+// A Xbox 360 controller returned "xinput" on Firefox and "Xbox 360 Controller (XInput STANDARD GAMEPAD)" on Chrome
+func (i *Input) GamepadName(id int) string {
+	if len(i.gamepads) <= id {
+		return ""
+	}
+	return i.gamepads[id].name
 }
 
 func (i *Input) GamepadIDs() []int {
@@ -111,7 +135,8 @@ func (i *Input) TouchIDs() []int {
 func (i *Input) TouchPosition(id int) (x, y int) {
 	for tid, pos := range i.touches {
 		if id == tid {
-			return i.ui.adjustPosition(pos.X, pos.Y)
+			x, y := i.ui.context.AdjustPosition(float64(pos.X), float64(pos.Y))
+			return int(x), int(y)
 		}
 	}
 	return 0, 0
@@ -129,12 +154,12 @@ func (i *Input) ResetForFrame() {
 
 func (i *Input) IsKeyPressed(key driver.Key) bool {
 	if i.keyPressed != nil {
-		if i.keyPressed[keyToCode[key]] {
+		if i.keyPressed[driverKeyToJSKey[key]] {
 			return true
 		}
 	}
 	if i.keyPressedEdge != nil {
-		for c, k := range keyCodeToKeyEdge {
+		for c, k := range edgeKeyCodeToDriverKey {
 			if k != key {
 				continue
 			}
@@ -231,6 +256,7 @@ func (i *Input) UpdateGamepads() {
 			continue
 		}
 		i.gamepads[id].valid = true
+		i.gamepads[id].name = gamepad.Get("id").String()
 
 		axes := gamepad.Get("axes")
 		axesNum := axes.Get("length").Int()
@@ -262,24 +288,24 @@ func (i *Input) Update(e js.Value) {
 		c := e.Get("code")
 		if jsutil.Equal(c, js.Undefined()) {
 			code := e.Get("keyCode").Int()
-			if keyCodeToKeyEdge[code] == driver.KeyUp ||
-				keyCodeToKeyEdge[code] == driver.KeyDown ||
-				keyCodeToKeyEdge[code] == driver.KeyLeft ||
-				keyCodeToKeyEdge[code] == driver.KeyRight ||
-				keyCodeToKeyEdge[code] == driver.KeyBackspace ||
-				keyCodeToKeyEdge[code] == driver.KeyTab {
+			if edgeKeyCodeToDriverKey[code] == driver.KeyUp ||
+				edgeKeyCodeToDriverKey[code] == driver.KeyDown ||
+				edgeKeyCodeToDriverKey[code] == driver.KeyLeft ||
+				edgeKeyCodeToDriverKey[code] == driver.KeyRight ||
+				edgeKeyCodeToDriverKey[code] == driver.KeyBackspace ||
+				edgeKeyCodeToDriverKey[code] == driver.KeyTab {
 				e.Call("preventDefault")
 			}
 			i.keyDownEdge(code)
 			return
 		}
 		cs := c.String()
-		if cs == keyToCode[driver.KeyUp] ||
-			cs == keyToCode[driver.KeyDown] ||
-			cs == keyToCode[driver.KeyLeft] ||
-			cs == keyToCode[driver.KeyRight] ||
-			cs == keyToCode[driver.KeyBackspace] ||
-			cs == keyToCode[driver.KeyTab] {
+		if cs == driverKeyToJSKey[driver.KeyUp] ||
+			cs == driverKeyToJSKey[driver.KeyDown] ||
+			cs == driverKeyToJSKey[driver.KeyLeft] ||
+			cs == driverKeyToJSKey[driver.KeyRight] ||
+			cs == driverKeyToJSKey[driver.KeyBackspace] ||
+			cs == driverKeyToJSKey[driver.KeyTab] {
 			e.Call("preventDefault")
 		}
 		i.keyDown(cs)

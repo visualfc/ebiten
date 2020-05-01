@@ -144,7 +144,7 @@ func NewImage(width, height int, volatile bool) *Image {
 		height:   height,
 		volatile: volatile,
 	}
-	i.clear()
+	fillImage(i.image, color.RGBA{})
 	theImages.add(i)
 	return i
 }
@@ -196,14 +196,9 @@ func NewScreenFramebufferImage(width, height int) *Image {
 		height: height,
 		screen: true,
 	}
-	i.clear()
+	fillImage(i.image, color.RGBA{})
 	theImages.add(i)
 	return i
-}
-
-func (i *Image) Clear() {
-	theImages.makeStaleIfDependingOn(i)
-	i.clear()
 }
 
 // quadVertices returns vertices to render a quad. These values are passed to graphicscommand.Image.
@@ -214,39 +209,6 @@ func quadVertices(dx0, dy0, dx1, dy1, sx0, sy0, sx1, sy1, cr, cg, cb, ca float32
 		dx0, dy1, sx0, sy1, sx0, sy0, sx1, sy1, cr, cg, cb, ca,
 		dx1, dy1, sx1, sy1, sx0, sy0, sx1, sy1, cr, cg, cb, ca,
 	}
-}
-
-// clearImage clears a graphicscommand.Image.
-// This does nothing to do with a restorable.Image's rendering state.
-func clearImage(img *graphicscommand.Image) {
-	if img == emptyImage.image {
-		panic("restorable: clearImage cannot be called on emptyImage")
-	}
-
-	// There are not 'drawTrianglesHistoryItem's for this image and emptyImage.
-	// As emptyImage is a priority image, this is restored before other regular images are restored.
-
-	// The rendering target size needs to be its 'internal' size instead of the exposed size to avoid glitches on
-	// mobile platforms (See the change 1e1f309a).
-	dw, dh := img.InternalSize()
-	sw, sh := emptyImage.image.InternalSize()
-	vs := quadVertices(0, 0, float32(dw), float32(dh), 0, 0, float32(sw), float32(sh), 0, 0, 0, 0)
-	is := graphics.QuadIndices()
-	// The first DrawTriangles must be clear mode for initialization.
-	// TODO: Can the graphicscommand package hide this knowledge?
-	img.DrawTriangles(emptyImage.image, vs, is, nil, driver.CompositeModeClear, driver.FilterNearest, driver.AddressClampToZero)
-}
-
-func (i *Image) clear() {
-	if i.priority {
-		panic("restorable: clear cannot be called on a priority image")
-	}
-
-	clearImage(i.image)
-
-	i.basePixels = Pixels{}
-	i.drawTrianglesHistory = nil
-	i.stale = false
 }
 
 // Fill fills the specified part of the image with a solid color.
@@ -277,7 +239,10 @@ func fillImage(i *graphicscommand.Image, clr color.RGBA) {
 
 	// TODO: Use the previous composite mode if possible.
 	compositemode := driver.CompositeModeSourceOver
-	if af < 1.0 {
+	switch {
+	case af == 0.0:
+		compositemode = driver.CompositeModeClear
+	case af < 1.0:
 		compositemode = driver.CompositeModeCopy
 	}
 
@@ -437,26 +402,34 @@ func (i *Image) appendDrawTrianglesHistory(image *Image, vertices []float32, ind
 	i.drawTrianglesHistory = append(i.drawTrianglesHistory, item)
 }
 
-func (i *Image) readPixelsFromGPUIfNeeded() {
+func (i *Image) readPixelsFromGPUIfNeeded() error {
 	if len(i.drawTrianglesHistory) > 0 || i.stale {
-		graphicscommand.FlushCommands()
-		i.readPixelsFromGPU()
+		if err := graphicscommand.FlushCommands(); err != nil {
+			return err
+		}
+		if err := i.readPixelsFromGPU(); err != nil {
+			return err
+		}
 		i.drawTrianglesHistory = nil
 		i.stale = false
 	}
+	return nil
 }
 
 // At returns a color value at (x, y).
 //
 // Note that this must not be called until context is available.
-func (i *Image) At(x, y int) (byte, byte, byte, byte) {
+func (i *Image) At(x, y int) (byte, byte, byte, byte, error) {
 	if x < 0 || y < 0 || i.width <= x || i.height <= y {
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, nil
 	}
 
-	i.readPixelsFromGPUIfNeeded()
+	if err := i.readPixelsFromGPUIfNeeded(); err != nil {
+		return 0, 0, 0, 0, err
+	}
 
-	return i.basePixels.At(x, y)
+	r, g, b, a := i.basePixels.At(x, y)
+	return r, g, b, a, nil
 }
 
 // makeStaleIfDependingOn makes the image stale if the image depends on target.
@@ -470,29 +443,34 @@ func (i *Image) makeStaleIfDependingOn(target *Image) {
 }
 
 // readPixelsFromGPU reads the pixels from GPU and resolves the image's 'stale' state.
-func (i *Image) readPixelsFromGPU() {
+func (i *Image) readPixelsFromGPU() error {
+	pix, err := i.image.Pixels()
+	if err != nil {
+		return err
+	}
 	i.basePixels = Pixels{}
-	i.basePixels.AddOrReplace(i.image.Pixels(), 0, 0, i.width, i.height)
+	i.basePixels.AddOrReplace(pix, 0, 0, i.width, i.height)
 	i.drawTrianglesHistory = nil
 	i.stale = false
+	return nil
 }
 
 // resolveStale resolves the image's 'stale' state.
-func (i *Image) resolveStale() {
+func (i *Image) resolveStale() error {
 	if !needsRestoring() {
-		return
+		return nil
 	}
 
 	if i.volatile {
-		return
+		return nil
 	}
 	if i.screen {
-		return
+		return nil
 	}
 	if !i.stale {
-		return
+		return nil
 	}
-	i.readPixelsFromGPU()
+	return i.readPixelsFromGPU()
 }
 
 // dependsOn returns a boolean value indicating whether the image depends on target.
@@ -523,7 +501,7 @@ func (i *Image) hasDependency() bool {
 }
 
 // Restore restores *graphicscommand.Image from the pixels using its state.
-func (i *Image) restore() {
+func (i *Image) restore() error {
 	w, h := i.width, i.height
 	// Do not dispose the image here. The image should be already disposed.
 
@@ -534,12 +512,12 @@ func (i *Image) restore() {
 		i.basePixels = Pixels{}
 		i.drawTrianglesHistory = nil
 		i.stale = false
-		return
+		return nil
 	}
 	if i.volatile {
 		i.image = graphicscommand.NewImage(w, h)
-		i.clear()
-		return
+		fillImage(i.image, color.RGBA{})
+		return nil
 	}
 	if i.stale {
 		panic("restorable: pixels must not be stale when restoring")
@@ -548,9 +526,9 @@ func (i *Image) restore() {
 	gimg := graphicscommand.NewImage(w, h)
 	// Clear the image explicitly.
 	if i != emptyImage {
-		// As clearImage uses emptyImage, clearImage cannot be called on emptyImage.
+		// As fillImage uses emptyImage, fillImage cannot be called on emptyImage.
 		// It is OK to skip this since emptyImage has its entire pixel information.
-		clearImage(gimg)
+		fillImage(gimg, color.RGBA{})
 	}
 	i.basePixels.Apply(gimg)
 
@@ -563,12 +541,17 @@ func (i *Image) restore() {
 
 	if len(i.drawTrianglesHistory) > 0 {
 		i.basePixels = Pixels{}
-		i.basePixels.AddOrReplace(gimg.Pixels(), 0, 0, w, h)
+		pix, err := gimg.Pixels()
+		if err != nil {
+			return err
+		}
+		i.basePixels.AddOrReplace(pix, 0, 0, w, h)
 	}
 
 	i.image = gimg
 	i.drawTrianglesHistory = nil
 	i.stale = false
+	return nil
 }
 
 // Dispose disposes the image.
@@ -586,12 +569,14 @@ func (i *Image) Dispose() {
 // isInvalidated returns a boolean value indicating whether the image is invalidated.
 //
 // If an image is invalidated, GL context is lost and all the images should be restored asap.
-func (i *Image) isInvalidated() bool {
+func (i *Image) isInvalidated() (bool, error) {
 	// FlushCommands is required because c.offscreen.impl might not have an actual texture.
-	graphicscommand.FlushCommands()
-	return i.image.IsInvalidated()
+	if err := graphicscommand.FlushCommands(); err != nil {
+		return false, err
+	}
+	return i.image.IsInvalidated(), nil
 }
 
-func (i *Image) Dump(path string) error {
-	return i.image.Dump(path)
+func (i *Image) Dump(path string, blackbg bool) error {
+	return i.image.Dump(path, blackbg)
 }

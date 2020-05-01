@@ -19,15 +19,15 @@ import (
 )
 
 type (
-	Action       int
-	ErrorCode    int
-	Hint         int
-	InputMode    int
-	Joystick     int
-	Key          int
-	ModifierKey  int
-	MouseButton  int
-	MonitorEvent int
+	Action          int
+	ErrorCode       int
+	Hint            int
+	InputMode       int
+	Joystick        int
+	Key             int
+	ModifierKey     int
+	MouseButton     int
+	PeripheralEvent int
 )
 
 const (
@@ -73,13 +73,17 @@ const (
 )
 
 const (
-	ClientAPI           = Hint(0x00022001)
-	ContextVersionMajor = Hint(0x00022002)
-	ContextVersionMinor = Hint(0x00022003)
-	Decorated           = Hint(0x00020005)
-	Focused             = Hint(0x00020001)
-	Resizable           = Hint(0x00020003)
-	Visible             = Hint(0x00020004)
+	ClientAPI              = Hint(0x00022001)
+	ContextVersionMajor    = Hint(0x00022002)
+	ContextVersionMinor    = Hint(0x00022003)
+	Decorated              = Hint(0x00020005)
+	Floating               = Hint(0x00020007)
+	Focused                = Hint(0x00020001)
+	Iconified              = Hint(0x00020002)
+	Maximized              = Hint(0x00020008)
+	Resizable              = Hint(0x00020003)
+	TransparentFramebuffer = Hint(0x0002000A)
+	Visible                = Hint(0x00020004)
 )
 
 const (
@@ -89,9 +93,10 @@ const (
 )
 
 const (
-	CursorHidden = 0x00034002
-	CursorNormal = 0x00034001
-	NoAPI        = 0
+	CursorDisabled = 0x00034003
+	CursorHidden   = 0x00034002
+	CursorNormal   = 0x00034001
+	NoAPI          = 0
 )
 
 const (

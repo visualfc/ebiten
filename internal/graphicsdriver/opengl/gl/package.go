@@ -15,11 +15,13 @@
 package gl
 
 const (
-	VERTEX_SHADEDR       = 0x8B31
+	VERTEX_SHADER        = 0x8B31
 	FRAGMENT_SHADER      = 0x8B30
 	ARRAY_BUFFER         = 0x8892
 	ELEMENT_ARRAY_BUFFER = 0x8893
 	DYNAMIC_DRAW         = 0x88E8
+	STREAM_DRAW          = 0x88E0
+	PIXEL_UNPACK_BUFFER  = 0x88EC
 	SHORT                = 0x1402
 	FLOAT                = 0x1406
 
@@ -45,6 +47,7 @@ const (
 	MAX_TEXTURE_SIZE     = 0x0D33
 	NEAREST              = 0x2600
 	NO_ERROR             = 0
+	READ_WRITE           = 0x88BA
 	RGBA                 = 0x1908
 	TEXTURE_2D           = 0x0DE1
 	TEXTURE_MAG_FILTER   = 0x2800
@@ -55,7 +58,7 @@ const (
 	UNPACK_ALIGNMENT     = 0x0CF5
 	UNSIGNED_BYTE        = 0x1401
 	UNSIGNED_SHORT       = 0x1403
-	VERTEX_SHADER        = 0x8B31
+	WRITE_ONLY           = 0x88B9
 )
 
 // Init initializes the OpenGL bindings by loading the function pointers (for

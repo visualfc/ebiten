@@ -228,14 +228,6 @@ func (c *context) isTexture(t textureNative) bool {
 	return r
 }
 
-func (c *context) texSubImage2D(t textureNative, p []byte, x, y, width, height int) {
-	c.bindTexture(t)
-	_ = c.t.Call(func() error {
-		gl.TexSubImage2D(gl.TEXTURE_2D, 0, int32(x), int32(y), int32(width), int32(height), gl.RGBA, gl.UNSIGNED_BYTE, gl.Ptr(p))
-		return nil
-	})
-}
-
 func (c *context) newFramebuffer(texture textureNative) (framebufferNative, error) {
 	var framebuffer framebufferNative
 	var f uint32
@@ -532,4 +524,45 @@ func (c *context) flush() {
 
 func (c *context) needsRestoring() bool {
 	return false
+}
+
+func (c *context) canUsePBO() bool {
+	return true
+}
+
+func (c *context) texSubImage2D(t textureNative, width, height int, args []*driver.ReplacePixelsArgs) {
+	panic("opengl: texSubImage2D is not implemented on this environment")
+}
+
+func (c *context) newPixelBufferObject(width, height int) buffer {
+	var bf buffer
+	_ = c.t.Call(func() error {
+		var b uint32
+		gl.GenBuffers(1, &b)
+		gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, b)
+		gl.BufferData(gl.PIXEL_UNPACK_BUFFER, 4*width*height, nil, gl.STREAM_DRAW)
+		gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, 0)
+		bf = buffer(b)
+		return nil
+	})
+	return bf
+}
+
+func (c *context) replacePixelsWithPBO(buffer buffer, t textureNative, width, height int, args []*driver.ReplacePixelsArgs) {
+	c.bindTexture(t)
+	_ = c.t.Call(func() error {
+		gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, uint32(buffer))
+
+		stride := 4 * width
+		for _, a := range args {
+			offset := 4 * (a.Y*width + a.X)
+			for j := 0; j < a.Height; j++ {
+				gl.BufferSubData(gl.PIXEL_UNPACK_BUFFER, offset+stride*j, 4*a.Width, gl.Ptr(a.Pixels[4*a.Width*j:4*a.Width*(j+1)]))
+			}
+		}
+
+		gl.TexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, int32(width), int32(height), gl.RGBA, gl.UNSIGNED_BYTE, nil)
+		gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, 0)
+		return nil
+	})
 }

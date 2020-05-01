@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build android ios
+
 package mobile
 
 import (
-	"math"
-
 	"github.com/hajimehoshi/ebiten"
 	"github.com/hajimehoshi/ebiten/mobile/ebitenmobileview"
 )
@@ -55,9 +55,9 @@ func Start(f func(*ebiten.Image) error, width, height int, scale float64, title 
 		height: height,
 	})
 	// As the view layout is already determined, ignore the layout calculation at ebitenmobileview.
-	w := int(math.Ceil((float64(width) * scale)))
-	h := int(math.Ceil((float64(height) * scale)))
-	ebitenmobileview.Layout(w, h, nil)
+	w := float64(width) * scale
+	h := float64(height) * scale
+	ebitenmobileview.Layout(w, h)
 	return nil
 }
 
