@@ -72,7 +72,7 @@ func (u *UserInterface) SetFullscreen(fullscreen bool) {
 }
 
 func (u *UserInterface) IsFullscreen() bool {
-	return false
+	return true
 }
 
 func (u *UserInterface) IsFocused() bool {
@@ -140,8 +140,7 @@ func (u *UserInterface) updateSize() {
 		// bw := body.Get("clientWidth").Float()
 		// bh := body.Get("clientHeight").Float()
 		// wx hack
-		devicePixelRatio := js.Global().Get("window").Get("devicePixelRatio").Float()
-		u.context.Layout(bw/devicePixelRatio, bh/devicePixelRatio)
+		u.context.Layout(bw, bh)
 	}
 }
 
@@ -438,12 +437,12 @@ func (u *UserInterface) RunWithoutMainLoop(context driver.UIContext) {
 
 func (u *UserInterface) updateScreenSize() {
 	// body := document.Get("body")
-	// bw := int(body.Get("clientWidth").Float() * u.DeviceScaleFactor())
-	// bh := int(body.Get("clientHeight").Float() * u.DeviceScaleFactor())
+	//bw := int(body.Get("clientWidth").Float() * u.DeviceScaleFactor())
+	//bh := int(body.Get("clientHeight").Float() * u.DeviceScaleFactor())
 
 	// wx hack
-	bw := window.Get("innerWidth").Float()
-	bh := window.Get("innerHeight").Float()
+	bw := int(window.Get("innerWidth").Float() * u.DeviceScaleFactor())
+	bh := int(window.Get("innerHeight").Float() * u.DeviceScaleFactor())
 
 	canvas.Set("width", bw)
 	canvas.Set("height", bh)
