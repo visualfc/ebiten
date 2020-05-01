@@ -104,6 +104,7 @@ func (i *Image) MarkDisposed() {
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
 		delayedCommands = append(delayedCommands, func() {
+			i.invalidatePendingPixels()
 			i.img.MarkDisposed()
 		})
 		delayedCommandsM.Unlock()
@@ -112,6 +113,7 @@ func (i *Image) MarkDisposed() {
 	delayedCommandsM.Unlock()
 
 	i.invalidatePendingPixels()
+	i.img.MarkDisposed()
 }
 
 func (i *Image) At(x, y int) (r, g, b, a byte) {
@@ -176,6 +178,7 @@ func (i *Image) Fill(clr color.RGBA) {
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
 		delayedCommands = append(delayedCommands, func() {
+			i.invalidatePendingPixels()
 			i.img.Fill(clr)
 		})
 		delayedCommandsM.Unlock()
@@ -205,6 +208,7 @@ func (i *Image) ReplacePixels(pix []byte) {
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
 		delayedCommands = append(delayedCommands, func() {
+			i.invalidatePendingPixels()
 			copied := make([]byte, len(pix))
 			copy(copied, pix)
 			i.img.ReplacePixels(copied)
@@ -218,6 +222,9 @@ func (i *Image) ReplacePixels(pix []byte) {
 	i.img.ReplacePixels(pix)
 }
 
+// DrawTriangles draws the src image with the given vertices.
+//
+// Copying vertices and indices is the caller's responsibility.
 func (i *Image) DrawTriangles(src *Image, vertices []float32, indices []uint16, colorm *affine.ColorM, mode driver.CompositeMode, filter driver.Filter, address driver.Address) {
 	if i == src {
 		panic("buffered: Image.DrawTriangles: src must be different from the receiver")
@@ -226,6 +233,9 @@ func (i *Image) DrawTriangles(src *Image, vertices []float32, indices []uint16, 
 	delayedCommandsM.Lock()
 	if needsToDelayCommands {
 		delayedCommands = append(delayedCommands, func() {
+			src.resolvePendingPixels(true)
+			i.resolvePendingPixels(false)
+			// Arguments are not copied. Copying is the caller's responsibility.
 			i.img.DrawTriangles(src.img, vertices, indices, colorm, mode, filter, address)
 		})
 		delayedCommandsM.Unlock()

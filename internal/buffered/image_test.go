@@ -15,7 +15,6 @@
 package buffered_test
 
 import (
-	"errors"
 	"image/color"
 	"os"
 	"testing"
@@ -40,31 +39,208 @@ func TestMain(m *testing.M) {
 	}()
 
 	for {
-		select {
-		case f := <-mainCh:
+		if err := ebiten.Run(func(*ebiten.Image) error {
+			f := <-mainCh
 			f()
+			return nil
+		}, 320, 240, 1, ""); err != nil {
+			panic(err)
 		}
 	}
 }
 
-func TestSetBeforeRun(t *testing.T) {
-	clr := color.RGBA{1, 2, 3, 4}
+type testResult struct {
+	want color.RGBA
+	got  <-chan color.RGBA
+}
 
+var testSetBeforeMainResult = func() testResult {
+	clr := color.RGBA{1, 2, 3, 4}
 	img, _ := ebiten.NewImage(16, 16, ebiten.FilterDefault)
 	img.Set(0, 0, clr)
 
-	want := clr
-	var got color.RGBA
+	ch := make(chan color.RGBA, 1)
+	go func() {
+		runOnMainThread(func() {
+			ch <- img.At(0, 0).(color.RGBA)
+		})
+	}()
 
-	runOnMainThread(func() {
-		quit := errors.New("quit")
-		if err := ebiten.Run(func(*ebiten.Image) error {
-			got = img.At(0, 0).(color.RGBA)
-			return quit
-		}, 320, 240, 1, ""); err != nil && err != quit {
-			t.Fatal(err)
-		}
-	})
+	return testResult{
+		want: clr,
+		got:  ch,
+	}
+}()
+
+func TestSetBeforeMain(t *testing.T) {
+	got := <-testSetBeforeMainResult.got
+	want := testSetBeforeMainResult.want
+
+	if got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+}
+
+var testDrawTrianglesBeforeMainResult = func() testResult {
+	const w, h = 16, 16
+	src, _ := ebiten.NewImage(w, h, ebiten.FilterDefault)
+	dst, _ := ebiten.NewImage(w, h, ebiten.FilterDefault)
+	src.Set(0, 0, color.White)
+	vs := []ebiten.Vertex{
+		{
+			DstX:   0,
+			DstY:   0,
+			SrcX:   0,
+			SrcY:   0,
+			ColorR: 1,
+			ColorG: 1,
+			ColorB: 1,
+			ColorA: 1,
+		},
+		{
+			DstX:   w,
+			DstY:   0,
+			SrcX:   w,
+			SrcY:   0,
+			ColorR: 1,
+			ColorG: 1,
+			ColorB: 1,
+			ColorA: 1,
+		},
+		{
+			DstX:   0,
+			DstY:   h,
+			SrcX:   0,
+			SrcY:   h,
+			ColorR: 1,
+			ColorG: 1,
+			ColorB: 1,
+			ColorA: 1,
+		},
+	}
+	dst.DrawTriangles(vs, []uint16{0, 1, 2}, src, nil)
+
+	ch := make(chan color.RGBA, 1)
+	go func() {
+		runOnMainThread(func() {
+			ch <- dst.At(0, 0).(color.RGBA)
+		})
+	}()
+
+	return testResult{
+		want: color.RGBA{0xff, 0xff, 0xff, 0xff},
+		got:  ch,
+	}
+}()
+
+func TestDrawTrianglesBeforeMain(t *testing.T) {
+	got := <-testDrawTrianglesBeforeMainResult.got
+	want := testDrawTrianglesBeforeMainResult.want
+
+	if got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+}
+
+var testSetAndFillBeforeMainResult = func() testResult {
+	clr := color.RGBA{1, 2, 3, 4}
+	img, _ := ebiten.NewImage(16, 16, ebiten.FilterDefault)
+	img.Set(0, 0, clr)
+	img.Fill(color.RGBA{5, 6, 7, 8})
+	img.Set(1, 0, clr)
+
+	ch := make(chan color.RGBA, 1)
+	go func() {
+		runOnMainThread(func() {
+			ch <- img.At(0, 0).(color.RGBA)
+		})
+	}()
+
+	return testResult{
+		want: color.RGBA{5, 6, 7, 8},
+		got:  ch,
+	}
+}()
+
+func TestSetAndFillBeforeMain(t *testing.T) {
+	got := <-testSetAndFillBeforeMainResult.got
+	want := testSetAndFillBeforeMainResult.want
+
+	if got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+}
+
+var testSetAndReplacePixelsBeforeMainResult = func() testResult {
+	clr := color.RGBA{1, 2, 3, 4}
+	img, _ := ebiten.NewImage(16, 16, ebiten.FilterDefault)
+	img.Set(0, 0, clr)
+	pix := make([]byte, 4*16*16)
+	for i := 0; i < len(pix)/4; i++ {
+		pix[4*i] = 5
+		pix[4*i+1] = 6
+		pix[4*i+2] = 7
+		pix[4*i+3] = 8
+	}
+	img.ReplacePixels(pix)
+	img.Set(1, 0, clr)
+
+	ch := make(chan color.RGBA, 1)
+	go func() {
+		runOnMainThread(func() {
+			ch <- img.At(0, 0).(color.RGBA)
+		})
+	}()
+
+	return testResult{
+		want: color.RGBA{5, 6, 7, 8},
+		got:  ch,
+	}
+}()
+
+func TestSetAndReplacePixelsBeforeMain(t *testing.T) {
+	got := <-testSetAndReplacePixelsBeforeMainResult.got
+	want := testSetAndReplacePixelsBeforeMainResult.want
+
+	if got != want {
+		t.Errorf("got: %v, want: %v", got, want)
+	}
+}
+
+var testReplacePixelsAndModifyBeforeMainResult = func() testResult {
+	img, _ := ebiten.NewImage(16, 16, ebiten.FilterDefault)
+	pix := make([]byte, 4*16*16)
+	for i := 0; i < len(pix)/4; i++ {
+		pix[4*i] = 1
+		pix[4*i+1] = 2
+		pix[4*i+2] = 3
+		pix[4*i+3] = 4
+	}
+	img.ReplacePixels(pix)
+	// After calling ReplacePixels, modifying pix must not affect the result.
+	for i := 0; i < len(pix)/4; i++ {
+		pix[4*i] = 5
+		pix[4*i+1] = 6
+		pix[4*i+2] = 7
+		pix[4*i+3] = 8
+	}
+
+	ch := make(chan color.RGBA, 1)
+	go func() {
+		runOnMainThread(func() {
+			ch <- img.At(0, 0).(color.RGBA)
+		})
+	}()
+
+	return testResult{
+		want: color.RGBA{1, 2, 3, 4},
+		got:  ch,
+	}
+}()
+
+func TestReplacePixelsAndModifyBeforeMain(t *testing.T) {
+	got := <-testReplacePixelsAndModifyBeforeMainResult.got
+	want := testReplacePixelsAndModifyBeforeMainResult.want
 
 	if got != want {
 		t.Errorf("got: %v, want: %v", got, want)
